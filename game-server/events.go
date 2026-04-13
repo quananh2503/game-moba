@@ -98,3 +98,14 @@ func NewSpawnProjectEvent(entityID Entity,SpellID def.Spell, x,y float32,angle u
 	ev.WriteUint16(angle)
 	return ev 
 }
+
+func NewSpawnVisual(entity Entity, visualID uint8 , x,y float32, angle uint16) RawEvent{
+	ev :=RawEvent{
+	}
+	ev.WriteUint32(uint32(entity))
+	ev.WriteUint8(visualID)
+	ev.WriteFloat32(x)
+	ev.WriteFloat32(y)
+	ev.WriteUint16(angle)
+	return ev
+}

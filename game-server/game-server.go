@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -27,10 +26,7 @@ const (
 	Element_Stone   uint8 = 5
 	Element_Poison uint8 = 6
 )
-type EventForTeams struct{
-	teamID uint8
-	rawEvent RawEvent
-}
+
 type SpatialGrid struct{
 	Cells [GridCols*GridRows][]Entity
 	TeamVisions [256]VisionMask
@@ -65,23 +61,45 @@ type ClientConnection struct {
 	
 	PendingEvents []PendingEvent
 	PendingLarge  []PendingLargeEvent
-	PendingInputs atomic.Uint32
+}
+type SpatialEvent struct {
+	X, Y  float32
+	Event RawEvent
+}
+type PrivateEvent struct{
+	NetId uint16 
+	Event RawEvent 
+}
+type NetworkOutbox struct {
+	Globals  []RawEvent
+	Privates []PrivateEvent
+	Spatials []SpatialEvent     
+}
+
+func NewNetworkOutbox() *NetworkOutbox {
+	return &NetworkOutbox{
+		Globals:  make([]RawEvent, 0, 100),
+		Privates: make([]PrivateEvent,0,500),
+		Spatials: make([]SpatialEvent, 0, 500),
+	}
 }
 
 type GameServer struct{
-	Engine *ArchEngine
+ 
+
+	//////////////////////////////////
 	// NetToEntity map[uint16]Entity
 	playerAddrs map[uint64]uint16
 	addrMutex sync.Mutex
 	nextPlayerID uint16
 
-
+////////////////////////////////////////
 	Clients [200]ClientConnection
 	ClientInputs [200]atomic.Uint64
-
+	//////////////////////////////////////
 	PendingPlayers []uint16
 
-
+      ////////////
 	MatchState uint8       // Trạng thái hiện tại
 	TickCount  uint64      // Đếm số lượng Tick đã trôi qua
 	Zone       ZoneInfo    // Vòng Bo
@@ -94,6 +112,7 @@ type GameServer struct{
 	mapDataCache []byte 
 
 	//system
+	Engine *ArchEngine
 	lifeSpanSystem *LifeSpanSystem
 	skillCastSystem *SkillCastSystem
 	physicCollisionSystem *PhysicsCollisionSystem
@@ -108,6 +127,7 @@ type GameServer struct{
 
 	TriggerOverlapSystem *TriggerOverlapSystem
 
+	
 	alivePlayer int
 	TimeNow time.Time
 
@@ -120,6 +140,7 @@ type GameServer struct{
 func NewGameServer() *GameServer {
 	writer:= NewPacketWriter(8192)
 	engine := NewArchEngine()
+
 	s:= &GameServer{
 		Engine: engine,
 
@@ -175,6 +196,10 @@ func NewGameServer() *GameServer {
 		
 
 
+	}
+	for i := 0; i < len(s.spatialGrid.Cells); i++ {
+		// Mỗi ô chứa tối đa 16 mục tiêu, dư sức cho game bình thường
+		s.spatialGrid.Cells[i] = make([]Entity, 0,50)
 	}
 	
 	return s
@@ -244,9 +269,9 @@ func (s *GameServer)processPendingPlayers(){
 		s.Clients[id].Entity=e
 		ev:=NewEvent(def.EventWelcome)
 		ev.WriteUint8(uint8(id))
-		s.emitPrivateEvent(id, def.EventWelcome, ev)
+		s.emitPrivateEvent(id, ev)
 		if s.mapDataCache !=nil{
-			s.emitPrivateLargeEvent(id,def.EventSendMap,s.mapDataCache)
+			s.emitPrivateLargeEvent(id,s.mapDataCache)
 		}
 		s.alivePlayer++
 		// fmt.Println(" gui tin cho client ", id)
@@ -272,13 +297,11 @@ func (s *GameServer) HandlePacket( data[]byte, addr *unix.RawSockaddrAny){
 		s.processAckClient(data[5:],playerNetId)
 	}
 }
-func (s *GameServer) emitGlobalEvent(evType byte, rawEvent RawEvent) {
+func (s *GameServer) emitGlobalEvent( rawEvent RawEvent) {
 	s.addrMutex.Lock()
 	defer s.addrMutex.Unlock()
-	// now :=time.Now()
+
 	ev := GameEvent{ 
-		// SeqID: , 
-		Type: evType, 
 		Len: rawEvent.Len,
 		Payload: rawEvent.Payload,
 	}
@@ -295,14 +318,13 @@ func (s *GameServer) emitGlobalEvent(evType byte, rawEvent RawEvent) {
 		}
 	}
 }
-func (s *GameServer) emitGlobalLargeEvent(evType byte,payload []byte) {
+func (s *GameServer) emitGlobalLargeEvent(payload []byte) {
 	s.addrMutex.Lock()
 	defer s.addrMutex.Unlock()
-	// now :=time.Now()
+
 	payloadCopy := make([]byte,len(payload))
 	copy(payloadCopy,payload)
 	ev := GameLargeEvent{ 
-		Type: evType, 
 		Payload: payload,
 	}
 
@@ -324,22 +346,12 @@ func (s *GameServer) EmitToTeam(teamID uint8, rawEvent RawEvent) {
 		Len: rawEvent.Len,
 		Payload: rawEvent.Payload,
 	}
-	// Duyệt tất cả Client đang online
 	for i := uint16(0); i < s.nextPlayerID; i++{
 		client := &s.Clients[i]
 		if client.Addr == nil { continue }
-
-		// Lấy Faction của Entity tương ứng với Client này
 		fac, exists := GetComponentByEntity[Faction](s.Engine, client.Entity)
 		if exists && fac.TeamID == teamID {
-			// Tái sử dụng logic của EmitPrivate (Viết inline để Zero-Allocation)
-			// ev := PendingEvent{
-			// 	SeqID:  client.NextSeqID,
-			// 	Event:  rawEvent,
-			// 	SentAt: s.TimeNow,
-			// }
-			// client.NextSeqID++
-			// client.PendingEvents = append(client.PendingEvents, ev)
+
 				event.SeqID=client.NextEventSeq
 				client.NextEventSeq++
 				client.PendingEvents=append(client.PendingEvents, PendingEvent{
@@ -349,10 +361,9 @@ func (s *GameServer) EmitToTeam(teamID uint8, rawEvent RawEvent) {
 		}
 	}
 }
-func(s *GameServer)emitPrivateEvent(targetId uint16, evType byte, rawEvent RawEvent){
+func(s *GameServer)emitPrivateEvent(targetId uint16, rawEvent RawEvent){
 	// now :=time.Now()
 	ev := GameEvent{ 
-		Type: evType, 
 		Len: rawEvent.Len,
 		Payload: rawEvent.Payload,
 	 }
@@ -367,10 +378,9 @@ func(s *GameServer)emitPrivateEvent(targetId uint16, evType byte, rawEvent RawEv
 	}	
 
 }
-func(s *GameServer)emitPrivateLargeEvent(targetId uint16, evType byte, payload []byte){
+func(s *GameServer)emitPrivateLargeEvent(targetId uint16, payload []byte){
 	// now :=time.Now()
 	ev := GameLargeEvent{ 
-		Type: evType, 
 		Payload:payload ,
 	 }
 	if s.Clients[targetId].Addr != nil {
@@ -454,20 +464,7 @@ func (s *GameServer) processAckClient(data []byte, playerID uint16) {
 	}
 	s.Clients[playerID].PendingLarge = eventsLarge[:keepLarge]
 }
-func hashRawAddr(addr *unix.RawSockaddrAny) uint64{
-	if addr.Addr.Family == unix.AF_INET{
-		add4 := (*unix.RawSockaddrInet4)(unsafe.Pointer(addr))
-		port := add4.Port
-		ip:=add4.Addr
-		return (uint64(port)<<32) | (uint64(ip[3])<<24) | (uint64(ip[2])<<16) | (uint64(ip[1])<<8) | (uint64(ip[0]))
-	}
-	return 0
-}
-func copyRawAddr(src *unix.RawSockaddrAny) *unix.RawSockaddrAny {
-	dst := new(unix.RawSockaddrAny) // Cấp phát vùng nhớ mới an toàn
-	*dst = *src
-	return dst
-}
+
 func (s *GameServer) StartLoop(engine *UdpEngine) {
 	// Sử dụng TickRate chung với client: 1 / TickRate giây mỗi tick
 	ticker := time.NewTicker(time.Second / TickRate)
@@ -482,7 +479,7 @@ func (s *GameServer) StartLoop(engine *UdpEngine) {
 	}
 	overlapEvents := make([]OverlapEvent,0,2048)
 	hitEvent := make([]HitEvent,0,2048)
-	eventsToTeam := make([]EventForTeams, 0,2048)
+	outbox := NewNetworkOutbox()
 	// for 
 	SpawnMapObjects(s.Engine)
 	s.CacheMapData()
@@ -490,7 +487,6 @@ func (s *GameServer) StartLoop(engine *UdpEngine) {
 	var maxTickTime time.Duration
 	budget := time.Second / TickRate 
 	tickCount := 0
-	InitGrid()
 	for {
 		<-ticker.C
 		   tickCount++ 
@@ -504,7 +500,7 @@ func (s *GameServer) StartLoop(engine *UdpEngine) {
 		VelocitySystem(s.Engine,dt)
 		PullTriggerSystem(s.Engine,&overlapEvents)
 		s.physicCollisionSystem.process(s.Engine,dt)
-		s.bounceSystem.process(s.Engine)
+		s.bounceSystem.process(s.Engine,outbox)
 		s.fragileSystem.process(s.Engine)
 		SolidBodySystem(s.Engine)
 		MovementSystem(s.Engine,dt)
@@ -520,14 +516,11 @@ func (s *GameServer) StartLoop(engine *UdpEngine) {
 		s.statusEffectUpdateSystem.process(s.Engine,dt,&hitEvent)
 		PreDeadSystem(s.Engine)
 		s.cleanWallHitSystem.process(s.Engine)
-		s.cleanSystem.process(s.Engine)
+		s.cleanSystem.process(s.Engine,outbox)
 		// for _,ev :=range s.Engine.FrameEvents{
 			// s.emitGlobalEvent(ev.Type,ev)
 		// }
-		for _,ev := range eventsToTeam{
-			s.EmitToTeam(ev.teamID,ev.rawEvent)
-		}
-		eventsToTeam=eventsToTeam[:0]
+
 		// s.Engine.FrameEvents = s.Engine.FrameEvents[:0]
 		s.broadcastState(engine)
 		elapsed := time.Since(s.TimeNow)

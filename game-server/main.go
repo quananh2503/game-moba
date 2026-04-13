@@ -4,9 +4,57 @@ import (
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
+	"sync/atomic"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+type Server struct{
+	netIO * NetworkIO
+	inputs *[200]atomic.Uint64
+	sessions *SessionManager
+	world *World
+	state *MatchState
+	pendingId []uint16
+	packetBuffer *PacketBuffer
+	
+}
+func NewServer(udpEngine *UdpEngine) *Server {
+	// Tạo các thùng Data và Engine
+	sessions := NewSessionManager()
+	inputs := [200]atomic.Uint64{}
+
+	return &Server{
+		sessions: sessions,
+		netIO:    NewNetworkIO(udpEngine, &inputs ),
+		world:    NewWord(),
+		state:    &MatchState{ /*...khởi tạo...*/ },
+		inputs:   &inputs,
+		pendingId: make([]uint16, 0,256),
+	}
+}
+func( s *Server)StartLoop(){
+	ticker := time.NewTicker(time.Second / TickRate)
+	dt := float32(0.016)
+	outbox := NewNetworkOutbox() // Tái sử dụng mỗi tick
+
+	SpawnMapObjects(s.world.Engine)
+
+	for {
+		<-ticker.C
+		s.state.TimeNow = time.Now()
+		s.state.TickCount++
+
+
+		s.sessions.ProcessRawPackets(s.packetBuffer,s.inputs,&s.pendingId)
+		s.world.AcceptPendingclients(&s.pendingId)
+
+		s.world.Tick(dt, s.inputs, outbox)
+		s.netIO.BroadcastState(s.world.Engine, s.state)
+
+	}
+}
 
 func main() {
 	go func() {
@@ -23,7 +71,7 @@ func main() {
 		panic(err)
 	}
 	// 2. Khởi tạo Bộ não Game
-	server := NewGameServer()
+	server := NewServer(engine)
 
 	//////fmt.println("Server UDP đang chạy tại port 9000...")
 
@@ -38,7 +86,7 @@ func main() {
 	if err:= unix.EpollCtl(epollFD,unix.EPOLL_CTL_ADD,engine.fd,&event);err!=nil{
 		panic(err)
 	}
-	go server.StartLoop(engine)
+	go server.StartLoop()
 	//////fmt.println("🔥 MOBA Server đã sẵn sàng tại port 9000 (Epoll Optimized)...")
 
 	events := make([] unix.EpollEvent,1)
@@ -49,14 +97,7 @@ func main() {
 			//////fmt.println("Lỗi EpollWait:", err)
 			break
 		}
-		n,_:=engine.ReadBatch()
-		if n>0{
-			for i:=0;i<n;i++{
-				packetLen:=engine.recvMsgs[i].Len
-				data := engine.recvBuffers[i][:packetLen]
-				server.HandlePacket(data,&engine.recvAddrs[i])
-			}
-		}
+		server.netIO.ReadBatch(server.packetBuffer)
 	}
 
 }

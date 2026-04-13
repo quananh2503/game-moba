@@ -42,12 +42,24 @@ func SpawnFireball(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 			addComponent(engine,e,Faction{TeamID: team})
 			addComponent(engine,e,DamageDealer{Effects: nil,Amount: 200,SourceID: owner,DestroyOnHit: false})
 			addComponent(engine,e,ScheduledTask{TimeLeft: 0.020})
-			ev :=NewSpawnVFXCircleEvent(def.VFXFireExplosion,x,y,100,0.020)
-			engine.FrameEvents = append(engine.FrameEvents, ev)
+			// ev :=
+
+			addComponent(engine,e,NetVisual{
+				createRawEvent: func(tran Transform) RawEvent {
+					return NewSpawnVFXCircleEvent(def.VFXFireExplosion,x,y,100,0.020)
+				},
+			})
+			// engine.FrameEvents = append(engine.FrameEvents, ev)
 		},
 	})
-	ev := NewSpawnProjectEvent(e,def.SpellFireball,x,y,angle)
-	engine.FrameEvents=append(engine.FrameEvents, ev)
+	// ev := NewSpawnProjectEvent(e,def.SpellFireball,x,y,angle)
+	// engine.FrameEvents=append(engine.FrameEvents, ev)
+	addComponent(engine,e,NetVisual{
+		createRawEvent: func(tran Transform) RawEvent {
+			ev :=NewSpawnProjectEvent(e,def.SpellFireball,tran.X,tran.Y,tran.Angle)
+			return ev
+		},
+	})
 
 
 	// Chú ý: Việc nổ AoE 100 units sẽ được xử lý trong HitboxSystem khi viên đạn này bị DestroyOnHit.
@@ -86,8 +98,8 @@ func SpawnFlamewall(engine *ArchEngine, owner Entity, team uint8, x, y float32, 
 		// Ty
 
 	})
-	ev :=NewSpawnVFXBoxEvent(def.VFXFireExplosion,spawnX,spawnY,150	,200,4,angle)
-	engine.FrameEvents=append(engine.FrameEvents, ev)
+	// ev :=NewSpawnVFXBoxEvent(def.VFXFireExplosion,spawnX,spawnY,150	,200,4,angle)
+	// engine.FrameEvents=append(engine.FrameEvents, ev)
 	// Gắn thêm component buff Ignite cho ai đi ngang qua (Xử lý ở hệ thống va chạm)
 }
 func SpawnToxicSpray(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
@@ -107,8 +119,8 @@ func SpawnToxicSpray(engine *ArchEngine, owner Entity, team uint8, x, y float32,
 		addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 100, DestroyOnHit: true})
 		addComponent(engine,e, Fragile{})
 
-		ev := NewSpawnProjectEvent(e,def.SpellToxicSpray,x,y,finalAngle)
-		engine.FrameEvents=append(engine.FrameEvents, ev)
+		// ev := NewSpawnProjectEvent(e,def.SpellToxicSpray,x,y,finalAngle)
+		// engine.FrameEvents=append(engine.FrameEvents, ev)
 	}
 }
 
@@ -127,8 +139,8 @@ func SpawnToxicCloud(engine *ArchEngine, owner Entity, team uint8, x, y float32,
 	addComponent(engine, e, ScheduledTask{TimeLeft: 8.0})
 	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 50, DestroyOnHit: false,TickRate: 0.5})
 	// ev :=NewSpawnVFXBoxEvent(VfX,spawnX,spawnY,150	,200,4,angle)
-	ev :=NewSpawnVFXCircleEvent(def.VFXToxicCloud,spawnX,spawnY,300,8)
-	engine.FrameEvents=append(engine.FrameEvents, ev)
+	// ev :=NewSpawnVFXCircleEvent(def.VFXToxicCloud,spawnX,spawnY,300,8)
+	// engine.FrameEvents=append(engine.FrameEvents, ev)
 }
 
 // ==========================================
@@ -169,11 +181,11 @@ func SpawnIceLance(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 				},
 			 })
 			 addComponent(engine,e,ScheduledTask{TimeLeft: 2.0})
-            ev := NewSpawnVFXCircleEvent(def.VFXIceTrail,x,y,15,2 )
-	        engine.FrameEvents = append(engine.FrameEvents, ev)
+            // ev := NewSpawnVFXCircleEvent(def.VFXIceTrail,x,y,15,2 )
+	        // engine.FrameEvents = append(engine.FrameEvents, ev)
 		},}) 
-	 ev := NewSpawnProjectEvent( e, def.SpellIceLance, x, y, angle)
-	engine.FrameEvents = append(engine.FrameEvents, ev)
+	//  ev := NewSpawnProjectEvent( e, def.SpellIceLance, x, y, angle)
+	// engine.FrameEvents = append(engine.FrameEvents, ev)
 }
 
 func SpawnFlashFreeze(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16) {
@@ -207,12 +219,12 @@ func SpawnFlashFreeze(engine *ArchEngine, owner Entity, team uint8, x, y float32
 					},
 				},
 			})
-			burstEv := NewSpawnVFXCircleEvent(def.VFXIceExplosion, x, y, 250, 0.5)
-			engine.FrameEvents = append(engine.FrameEvents, burstEv)
+			// burstEv := NewSpawnVFXCircleEvent(def.VFXIceExplosion, x, y, 250, 0.5)
+			// engine.FrameEvents = append(engine.FrameEvents, burstEv)
 		},
 	})
-	ev := NewSpawnVFXCircleEvent(def.VFXIceWarning, spawnX, spawnY, 250, 0.75)
-	engine.FrameEvents = append(engine.FrameEvents, ev)
+	// ev := NewSpawnVFXCircleEvent(def.VFXIceWarning, spawnX, spawnY, 250, 0.75)
+	// engine.FrameEvents = append(engine.FrameEvents, ev)
 	// addComponent(engine, e, DelayedAction{Timer: 0.75, ActionID: 1}) // 0.75s sau kích hoạt nổ Stun
 }
 
@@ -232,8 +244,8 @@ func SpawnWindShear(engine *ArchEngine, owner Entity, team uint8, x, y float32, 
 	addComponent(engine,e,Bounce{Remaining: 1})
 	// Đạn xuyên thấu (DestroyOnHit: false)
 	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 0, DestroyOnHit: false})
-	ev :=NewSpawnProjectEvent(e,def.SpellWindShear,x,y,angle)
-	engine.FrameEvents=append(engine.FrameEvents, ev)
+	// ev :=NewSpawnProjectEvent(e,def.SpellWindShear,x,y,angle)
+	// engine.FrameEvents=append(engine.FrameEvents, ev)
 }
 
 func SpawnTornado(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16)  {
@@ -253,8 +265,8 @@ func SpawnTornado(engine *ArchEngine, owner Entity, team uint8, x, y float32, an
 	addComponent(engine,e,Collider{ShapeType: 1,Radius: 350})
 	addComponent(engine, e, PullForce{Force: 200.0})
 
-	ev := NewSpawnVFXCircleEvent(def.VFXTornado,spawnX,spawnY,350,6)
-	engine.FrameEvents=append(engine.FrameEvents, ev)
+	// ev := NewSpawnVFXCircleEvent(def.VFXTornado,spawnX,spawnY,350,6)
+	// engine.FrameEvents=append(engine.FrameEvents, ev)
 }
 func SpawnShockwave(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
 	e := engine.CreateEntity()
@@ -284,8 +296,8 @@ func SpawnShockwave(engine *ArchEngine, owner Entity, team uint8, x, y float32, 
 	// Tồn tại 0.6s (Trượt được thêm 600 units rồi tự tan biến)
 	addComponent(engine, e, ScheduledTask{TimeLeft: 1})
 
-	ev := NewSpawnProjectEvent(e, def.SpellShockwave, spawnX, spawnY, angle)
-	engine.FrameEvents = append(engine.FrameEvents, ev)
+	// ev := NewSpawnProjectEvent(e, def.SpellShockwave, spawnX, spawnY, angle)
+	// engine.FrameEvents = append(engine.FrameEvents, ev)
 }
 func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, aimX, aimY float32) {
 	// 1. TẠO BÓNG TÂM ĐIỂM (Cảnh báo 1.2s)
@@ -294,8 +306,8 @@ func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, aimX, aimY f
 	addComponent(engine, e, ScheduledTask{TimeLeft: 1.2})
 
 	// Báo Client vẽ vòng tròn cảnh báo màu Đất
-	warnEv := NewSpawnVFXCircleEvent(def.VFXBoulderWarning, aimX, aimY, 180.0, 1.2)
-	engine.FrameEvents = append(engine.FrameEvents, warnEv)
+	// warnEv := NewSpawnVFXCircleEvent(def.VFXBoulderWarning, aimX, aimY, 180.0, 1.2)
+	// engine.FrameEvents = append(engine.FrameEvents, warnEv)
 
 	// 2. ĐÁ RƠI XUỐNG VÀ NỔ BÙM
 	addComponent(engine, e, SpawnOnDead{
@@ -315,8 +327,8 @@ func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, aimX, aimY f
 			})
 
 			// Báo Client vẽ vụ nổ Đất Đá
-			crashEv := NewSpawnVFXCircleEvent(def.VFXBoulderCrash, x, y, 180.0, 0.6)
-			engine.FrameEvents = append(engine.FrameEvents, crashEv)
+			// crashEv := NewSpawnVFXCircleEvent(def.VFXBoulderCrash, x, y, 180.0, 0.6)
+			// engine.FrameEvents = append(engine.FrameEvents, crashEv)
 		},
 	})
 }

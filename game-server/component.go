@@ -184,5 +184,6 @@ func ( m *VisibilityMask)Set(teamID uint8){
     m.KnownByTeams[teamID/64] = m.KnownByTeams[teamID/64] | (1 << (teamID%64))
 }
 type NetVisual struct{
-    VisualID uint8
+    createRawEvent func( tran Transform)RawEvent
 }
+type TagPlayer struct{}

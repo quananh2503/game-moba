@@ -35,7 +35,7 @@ func RunSystem2Ex[A any, B any](engine *ArchEngine, excludeMask ComponentMask, l
 		}
 	}
 }
-func RunSystem2[A any, B any](engine *ArchEngine, logic func(count int, compA []A, compB []B)) {
+func RunSystem2[A any, B any](engine *ArchEngine, logic func(count int,entities []Entity, compA []A, compB []B)) {
 	maskA := GetMask[A]()
 	colA := GetColumnIdx(maskA)
 	maskB := GetMask[B]()
@@ -46,7 +46,7 @@ func RunSystem2[A any, B any](engine *ArchEngine, logic func(count int, compA []
 			sliceA := *(arch.Columns[colA]).(*[]A)
 			sliceB := *(arch.Columns[colB]).(*[]B)
 			count := len(arch.Entities)
-			logic(count, sliceA, sliceB)
+			logic(count,arch.Entities, sliceA, sliceB)
 		}
 	}
 }
