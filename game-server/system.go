@@ -298,6 +298,7 @@ func (s *PhysicsCollisionSystem) process(engine *ArchEngine, dt float32){
 			}
 			if hitX ||hitY{
 				//  _,isPlayer := GetComponentByEntity[TagPlayer{}]()
+				// fmt.Println("hit ",entities[i])
 				s.hits=append(s.hits, EntitiHit{
 					WallHit: WallHit{
 						HitX: hitX,
@@ -643,19 +644,24 @@ type CleanSystem struct{
 }
 func ( s *CleanSystem)process(engine *ArchEngine, outbox *NetworkOutbox){
 	s.deads=s.deads[:0]
-	RunSystem2(engine,func(count int, entities []Entity, deads []TagDead, trans []Transform) {
-		for i:=0; i<count;i++{
-			s.deads=append(s.deads, entities[i])
-			ev := NewRemoveEntityEvent(entities[i])
-			outbox.Spatials = append(outbox.Spatials,  SpatialEvent{
-				X: trans[i].X,
-				Y: trans[i].Y,
-				Event: ev,
+	RunSystem2Ex(engine,0, func(count int, entities []Entity, deads []TagDead, masks []VisibilityMask) {
+		for i := 0; i < count; i++ {
+			s.deads = append(s.deads, entities[i])
+			
+			ev := NewRemoveEntityEvent(entities[i]) 
+			
+			masks[i].ForAll(func(teamID uint8) {
+				outbox.Teams = append(outbox.Teams, TeamEvent{
+					TeamID: teamID,
+					Event:  ev,
+				})
 			})
-			if _,isPlayer:=GetComponentByEntity[TagPlayer](engine,entities[i]);isPlayer{
-				ev := NewKillEvent(entities[i])
-				outbox.Globals=append(outbox.Globals, ev)
-			}
+		}
+	})
+	RunSystem2(engine, func(count int, entities []Entity, deads []TagDead, players []TagPlayer) {
+		for i := 0; i < count; i++ {
+			ev := NewKillEvent(entities[i])
+			outbox.Globals = append(outbox.Globals, ev)
 		}
 	})
 	if len(s.deads)==0{
@@ -669,16 +675,18 @@ func ( s *CleanSystem)process(engine *ArchEngine, outbox *NetworkOutbox){
 }
 type BounceSystem struct{
 	deads []Entity
+	updates []Entity
 }
-func (s *BounceSystem)process(engine *ArchEngine, outbox *NetworkOutbox){
+func (s *BounceSystem)process(engine *ArchEngine){
 	s.deads = s.deads[:0]
+	s.updates=s.updates[:0]
 	exclude := GetMask[TagDead]()
-	RunSystem5Ex(engine,exclude,func(count int, entities []Entity, bounces []Bounce, hits []WallHit , vecs []Velocity, trans []Transform, visuals []NetVisual) {
+	RunSystem4Ex(engine,exclude,func(count int, entities []Entity, bounces []Bounce, hits []WallHit , vecs []Velocity, trans []Transform) {
 		for i:=0 ; i< count;i++{
 			v := &vecs[i]
 			h := hits[i]
 			b := &bounces[i]
-			visual := visuals[i]
+			// visual := visuals[i]
 			if b.Remaining<= 0{
 				s.deads=append(s.deads, entities[i])
 				continue
@@ -692,19 +700,14 @@ func (s *BounceSystem)process(engine *ArchEngine, outbox *NetworkOutbox){
 			}
 			rad := math.Atan2(float64(v.Dy), float64(v.Dx))
 			trans[i].Angle = uint16((rad * 180.0 / math.Pi) + 360.0) % 360	
-			ev := visual.createRawEvent(trans[i])
-			outbox.Spatials=append(outbox.Spatials,SpatialEvent{
-				X: trans[i].X,
-				Y: trans[i].Y,
-				Event: ev,
-			} )
-			// ev := NewUpdateProjectileEvent(entities[i], trans[i].X, trans[i].Y, trans[i].Angle)
-			// engine.FrameEvents = append(engine.FrameEvents, ev)
-			//fmt.println("dan bat goc")	
+			s.updates = append(s.updates, entities[i])
 		}
 	})
 	for _,e:=range s.deads{
 		addComponent(engine,e,TagDead{})
+	}
+	for _,e:=range s.updates{
+		addComponent(engine,e,TrajectoryChanged{})
 	}
 }
 
@@ -731,7 +734,7 @@ func (s *FragileSystem)process(engine *ArchEngine) {
 		}
 	})
 	for _, e:=range s.deads{
-		// //fmt.println("entirty dead ", e)
+		// fmt.Println("entirty dead ", e)
 		addComponent(engine,e,TagDead{})
 	}
 }
@@ -772,6 +775,7 @@ func getGridIndex(x , y float32)uint16{
 	return uint16(row * GridCols + col)
 
 }
+
 
 type TriggerOverlapSystem struct{
 	targetCache []TargetCache
@@ -942,93 +946,179 @@ func PullTriggerSystem(engine *ArchEngine, overlapEvents *[]OverlapEvent) {
         }
     }
 }
-func SpatialMappingSystem(engine *ArchEngine){
-	
-	RunSystem2Ex(engine,GetMask[TagDead](), func(count int, entities []Entity, spatials []SpatialState, trans []Transform) {
-		for i:=0;i<count;i++{
-			t := trans[i]
-			s := &spatials[i]
-			currentCell := getGridIndex(t.X,t.Y)
-			s.OldCell=s.CurrentCell
-			s.CurrentCell=currentCell
-		}
-	})
-} 
-func GridPopulationSystem(engine *ArchEngine,  grid *SpatialGrid){
-	for i :=range grid.Cells{
-		grid.Cells[i] = grid.Cells[i][:0]
+func getVisionGridIndex(x , y float32)uint16{
+	col := int(x)/VisionCellSize
+	row := int(y)/VisionCellSize
+	if col<0{
+		col = 0
 	}
-	RunSystem1Ex(engine,GetMask[TagDead](),func(count int, entities []Entity, spatials []SpatialState) {
-		for i:=0; i < count;i++{
-			s := spatials[i]
-			grid.Cells[s.CurrentCell]=append(grid.Cells[s.CurrentCell], entities[i])
-		}
-	})
+	if col >= GridCols{
+		col = GridCols - 1
+	}
+	if row <0{
+		row = 0
+	}
+	if row >=GridRows{
+		row = GridRows -1
+	}
+	return uint16(row * GridCols + col)
+
 }
-func VisionCalculationSystem(engine *ArchEngine, grid *SpatialGrid){
-	for i:= range grid.TeamVisions{
-		grid.TeamVisions[i].Clear()
+
+func VisionCalculationSystem(engine *ArchEngine, visions *CellsVisibilityMask) {
+	for i := range *visions {
+		(*visions)[i].Clear()
 	}
-	RunSystem4Ex(engine,GetMask[TagDead](),func(count int, entities []Entity, facs []Faction, cols []Collider, trans []Transform, comD []TagLightning) {
-		for i:=0; i< count;i++{
+
+	RunSystem3Ex(engine, GetMask[TagDead](), func(count int, entities []Entity, trans []Transform, facs []Faction, sights []SightRange) {
+			for i := 0; i < count; i++ {
 			t := trans[i]
-			c := cols[i]
 			teamID := facs[i].TeamID
-			for col := 0; col <= GridCols;col++{
-				for row := 0; row <= GridRows;row++{
-					x := float32(row * CellSize + CellSize*0.5)
-					y := float32(col *CellSize + CellSize*0.5)
-					if checkCircleVsAABB(t.X,t.Y,c.Radius,x,y,CellSize/2,CellSize/2){
-						grid.TeamVisions[teamID].Set(getGridIndex(x,y))
+			
+			visionRadius := float32(sights[i].Radius) 
+
+			minCol := int(t.X-visionRadius) / VisionCellSize
+			maxCol := int(t.X+visionRadius) / VisionCellSize
+			minRow := int(t.Y-visionRadius) / VisionCellSize
+			maxRow := int(t.Y+visionRadius) / VisionCellSize
+
+			if minCol < 0 { minCol = 0 }
+			if maxCol >= VisionGridCols { maxCol = VisionGridCols - 1 }
+			if minRow < 0 { minRow = 0 }
+			if maxRow >= VisionGridRows { maxRow = VisionGridRows - 1 }
+
+			for col := minCol; col <= maxCol; col++ {
+				for row := minRow; row <= maxRow; row++ {
+					// Tâm của ô Vision lưới nhỏ
+					x := float32(col*VisionCellSize) + float32(VisionCellSize)*0.5
+					y := float32(row*VisionCellSize) + float32(VisionCellSize)*0.5
+
+					if checkCircleVsAABB(t.X, t.Y, visionRadius, x, y, VisionCellSize, VisionCellSize) {
+						idx := uint16(row*VisionGridCols + col)
+						visions[idx].Set(teamID)
 					}
 				}
 			}
 		}
+			
 	})
 }
-func VisionTriggerSystem(engine *ArchEngine,grid *SpatialGrid, outbox *NetworkOutbox){
-	RunSystem4Ex(engine,GetMask[TagDead](), func(count int, entities []Entity, spats []SpatialState, masks []VisibilityMask, visuals []NetVisual,trans []Transform) {
+
+func VisionTriggerSystem(engine *ArchEngine, visions *CellsVisibilityMask, outbox *NetworkOutbox){
+	RunSystem4Ex(engine,GetMask[TagDead]()|GetMask[NetSync](), func(count int, entities []Entity, masks []VisibilityMask, visuals []NetVisual,trans []Transform, cols[]Collider) {
 		for i:=0; i < count;i++{
-			s := spats[i]
 			mask := &masks[i]
 			visual := visuals[i]
 			t := trans[i]
-			if s.CurrentCell == s.OldCell{
-				continue
-			}
-			for i,vision:=range grid.TeamVisions{
-				teamID := uint8(i)
-				if vision.Has(s.CurrentCell) && !mask.Has(teamID){
-					ev := visual.createRawEvent(t)
-					outbox.Spatials=append(outbox.Spatials, SpatialEvent{
-						X: t.X,
-						Y: t.Y,
-						Event: ev,
-					})
-					mask.Set(teamID)
+			visionRadius := float32(cols[i].Radius) 
+
+			minCol := int(t.X-visionRadius) / VisionCellSize
+			maxCol := int(t.X+visionRadius) / VisionCellSize
+			minRow := int(t.Y-visionRadius) / VisionCellSize
+			maxRow := int(t.Y+visionRadius) / VisionCellSize
+
+			if minCol < 0 { minCol = 0 }
+			if maxCol >= VisionGridCols { maxCol = VisionGridCols - 1 }
+			if minRow < 0 { minRow = 0 }
+			if maxRow >= VisionGridRows { maxRow = VisionGridRows - 1 }
+			resMask := &VisibilityMask{}
+			for row := minRow; row <= maxRow;row++{
+				for col := minCol;col<=maxCol;col++{
+					mask := visions[row * VisionGridCols+col]
+					resMask.Or(mask)					 
 				}
 			}
+			rawEv := visual.createRawEvent(t)
+			gainedVisionMask := resMask.AndNot(*mask)
+			gainedVisionMask.ForAll(func(teamID uint8) {
+				outbox.Teams = append(outbox.Teams, TeamEvent{
+					TeamID: teamID,
+					Event:  rawEv, // Event Spawn / Hiện hình
+				})
+			})
+			lostVisionMask := mask.AndNot(*resMask)
+			lostVisionMask.ForAll(func(teamID uint8) {
+				// TẠO EVENT ẨN/XÓA ENTITY GỬI CHO CLIENT (Bạn cần hàm tạo event này)
+				hideEv := NewRemoveEntityEvent(entities[i]) 
+				// fmt.Println("vien dan ra khoi tam nhin E: ",entities[i] )
+				outbox.Teams = append(outbox.Teams, TeamEvent{
+					TeamID: teamID,
+					Event:  hideEv,
+				})
+			})
+			*mask=*resMask
 		}
 	})
 }
-func(s *GameServer ) FlushNetworkOutbox(grid *SpatialGrid, outbox *NetworkOutbox){
-	for _,ev:=range outbox.Globals{
-		s.emitGlobalEvent(ev)
-	}
-	outbox.Globals=outbox.Globals[:0]
-	for _,ev:=range outbox.Spatials{
-		cell := getGridIndex(ev.X,ev.Y)
-		for teamID,team := range grid.TeamVisions{
-			if team.Has(cell){
-				s.EmitToTeam(uint8(teamID),ev.Event)
+
+func VisionTriggerVialitySystem(engine *ArchEngine, visions *CellsVisibilityMask, outbox *NetworkOutbox){
+	RunSystem4Ex(engine,GetMask[TagDead](), func(count int, entities []Entity,trans []Transform, cols[]Collider, vialities []Vitality, nets[]NetSync) {
+		for i:=0; i < count;i++{
+		
+			t := trans[i]
+			v := vialities[i]
+			visionRadius := float32(cols[i].Radius) 
+
+			minCol := int(t.X-visionRadius) / VisionCellSize
+			maxCol := int(t.X+visionRadius) / VisionCellSize
+			minRow := int(t.Y-visionRadius) / VisionCellSize
+			maxRow := int(t.Y+visionRadius) / VisionCellSize
+
+			if minCol < 0 { minCol = 0 }
+			if maxCol >= VisionGridCols { maxCol = VisionGridCols - 1 }
+			if minRow < 0 { minRow = 0 }
+			if maxRow >= VisionGridRows { maxRow = VisionGridRows - 1 }
+			resMask := &VisibilityMask{}
+			for row := minRow; row <= maxRow;row++{
+				for col := minCol;col<=maxCol;col++{
+					mask := visions[row * VisionGridCols+col]
+					resMask.Or(mask)					 
+				}
 			}
+			
+			resMask.ForAll(func(teamID uint8) {
+				position := PlayerSnapshot{
+					NetID: nets[i].NetID,
+					X: t.X,
+					Y: t.Y,
+					HP: uint16(v.HP),	
+				}
+
+				outbox.Positions[teamID]=append(outbox.Positions[teamID], position)
+			})
 		}
+	})
+}
+// Bạn nên đặt System này ở file network_systems.go
+type TrajectorySyncSystem struct{
+	removes []Entity
+}
+func (s *TrajectorySyncSystem)process(engine *ArchEngine, outbox *NetworkOutbox) {
+	s.removes=s.removes[:0]
+	// Lặp qua tất cả những Entity vừa bị thay đổi quỹ đạo trong frame này
+	RunSystem3(engine, func(count int, entities []Entity, changes []TrajectoryChanged, trans []Transform, masks []VisibilityMask) {
+		for i := 0; i < count; i++ {
+			updateEv := NewUpdateProjectileEvent(entities[i], trans[i].X, trans[i].Y, trans[i].Angle)
+			
+			// Phát gói tin Update cho các Team đang nhìn thấy
+			masks[i].ForAll(func(teamID uint8) {
+				outbox.Teams = append(outbox.Teams, TeamEvent{
+					TeamID: teamID,
+					Event:  updateEv,
+				})
+			})
+			s.removes=append(s.removes, entities[i])
+		}
+	})
+	for _,e := range s.removes{
+		removeComponent[TrajectoryChanged](engine, e)
 	}
-	outbox.Spatials=outbox.Spatials[:0]
-	for _,ev := range outbox.Privates{
-		s.emitPrivateEvent(ev.NetId,ev.Event)
-	}
-	outbox.Privates=outbox.Privates[:0]
-
-
+	
+	// // DỌN DẸP: Xóa cờ `TrajectoryChanged` của tất cả Entity đã xử lý
+	// // (Để frame sau không gửi lại gói tin Update thừa)
+	// RunSystem1(engine, func(count int, entities []Entity, changes []TrajectoryChanged) {
+	// 	for i := 0; i < count; i++ {
+	// 		removeComponent[TrajectoryChanged](engine, entities[i])
+	// 	}
+	// })
 }

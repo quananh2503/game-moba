@@ -31,6 +31,7 @@ func checkCircleVsAABB(cx, cy, r float32, boxX, boxY, w, h float32) bool {
 	closestY := float32(math.Max(float64(boxY-h/2), math.Min(float64(cy), float64(boxY+h/2))))
 	dx := cx - closestX
 	dy := cy - closestY
+	// fmt.Printf("dx %f dy %f -%f <=%f \n",dx,dy,(dx*dx + dy*dy),r * r)
 	return (dx*dx + dy*dy) <= (r * r)
 }
 
@@ -100,6 +101,81 @@ func checkInteract2Collider(x1, y1 float32, c1 Collider, angle1 uint16, x2, y2 f
 		return checkAABBVsAABB(x1, y1, c1.Width, c1.Height, x2, y2, c2.Width, c2.Height)
 	}
 
+
+		if c1.ShapeType == def.ShapeOBB && c2.ShapeType == def.ShapeBox {
+		return checkOBBVsAABB(x1, y1, c1.Width, c1.Height, angle1, x2, y2, c2.Width, c2.Height)
+	}
+	if c1.ShapeType == def.ShapeBox && c2.ShapeType == def.ShapeOBB {
+		return checkOBBVsAABB(x2, y2, c2.Width, c2.Height, angle2, x1, y1, c1.Width, c1.Height)
+	}
+
+
 	// Nếu rơi vào các trường hợp không cần thiết (VD: OBB vs OBB), tự động bỏ qua.
 	return false 
+}
+func isPointInAABB(px, py float32, boxX, boxY, w, h float32) bool {
+	halfW := w / 2.0
+	halfH := h / 2.0
+	return px >= boxX-halfW && px <= boxX+halfW &&
+	       py >= boxY-halfH && py <= boxY+halfH
+}
+func isPointInOBB(px, py float32, rectX, rectY, w, h float32, angleDeg uint16) bool {
+    dx := px - rectX
+    dy := py - rectY
+
+    rad := -float64(angleDeg) * math.Pi / 180.0
+    cosA := float32(math.Cos(rad))
+    sinA := float32(math.Sin(rad))
+
+    localX := dx*cosA - dy*sinA
+    localY := dx*sinA + dy*cosA
+
+    halfW := w / 2.0
+    halfH := h / 2.0
+
+    return localX >= -halfW && localX <= halfW &&
+           localY >= -halfH && localY <= halfH
+}
+func checkOBBVsAABB(obbX, obbY, obbW, obbH float32, obbAngle uint16, aabbX, aabbY, aabbW, aabbH float32) bool {
+	// 1. LẤY 4 GÓC CỦA OBB
+	rad := float64(obbAngle) * math.Pi / 180.0
+	cosA := float32(math.Cos(rad))
+	sinA := float32(math.Sin(rad))
+	
+	halfW := obbW / 2.0
+	halfH := obbH / 2.0
+	
+	corners := [4][2]float32{
+		{-halfW, -halfH}, {halfW, -halfH},
+		{halfW, halfH},   {-halfW, halfH},
+	}
+
+	// 2. KIỂM TRA TỪNG GÓC OBB CÓ LỌT VÀO AABB KHÔNG
+	for _, c := range corners {
+		// Xoay góc về tọa độ thế giới
+		worldX := obbX + c[0]*cosA - c[1]*sinA
+		worldY := obbY + c[0]*sinA + c[1]*cosA
+
+		if isPointInAABB(worldX, worldY, aabbX, aabbY, aabbW, aabbH) {
+			return true
+		}
+	}
+    
+    // 3. NGƯỢC LẠI: KIỂM TRA 4 GÓC AABB CÓ LỌT VÀO OBB KHÔNG
+    // Điều này xử lý trường hợp OBB rất to nhưng không góc nào lọt vào AABB nhỏ
+    halfAabbW := aabbW / 2.0
+    halfAabbH := aabbH / 2.0
+    aabbCorners := [4][2]float32{
+        {aabbX - halfAabbW, aabbY - halfAabbH},
+        {aabbX + halfAabbW, aabbY - halfAabbH},
+        {aabbX + halfAabbW, aabbY + halfAabbH},
+        {aabbX - halfAabbW, aabbY + halfAabbH},
+    }
+    for _, c := range aabbCorners {
+        if isPointInOBB(c[0], c[1], obbX, obbY, obbW, obbH, obbAngle) {
+            return true
+        }
+    }
+
+	return false
 }

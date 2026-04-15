@@ -18,7 +18,14 @@ type Server struct{
 	state *MatchState
 	pendingId []uint16
 	packetBuffer *PacketBuffer
+	mapDataCache []byte
+	// visions 
 	
+}
+type MapNetEntity struct{
+	NetID uint16 
+	Entity Entity
+	TeamID uint8
 }
 func NewServer(udpEngine *UdpEngine) *Server {
 	// Tạo các thùng Data và Engine
@@ -32,6 +39,9 @@ func NewServer(udpEngine *UdpEngine) *Server {
 		state:    &MatchState{ /*...khởi tạo...*/ },
 		inputs:   &inputs,
 		pendingId: make([]uint16, 0,256),
+		packetBuffer: &PacketBuffer{
+			Packets: make([]RawPacket, 0, 1024),
+		},
 	}
 }
 func( s *Server)StartLoop(){
@@ -40,18 +50,68 @@ func( s *Server)StartLoop(){
 	outbox := NewNetworkOutbox() // Tái sử dụng mỗi tick
 
 	SpawnMapObjects(s.world.Engine)
+	s.CacheMapData()
+	delsEntities :=make([]Entity,0,256)
+	acceptEntities:=make([]MapNetEntity,0,256)
 
+	var totalWorkTime time.Duration
+	var maxTickTime time.Duration
+	var tickCount int
+	lastReport := time.Now()
+	targetTickTime := time.Second / TickRate //
 	for {
+		
 		<-ticker.C
-		s.state.TimeNow = time.Now()
+		start := time.Now()
+		s.state.TimeNow = start
 		s.state.TickCount++
+		// fmt.Println("vao day roi ",s.state.TickCount)
+		// start := time.Now()
 
-
-		s.sessions.ProcessRawPackets(s.packetBuffer,s.inputs,&s.pendingId)
-		s.world.AcceptPendingclients(&s.pendingId)
-
+		s.sessions.ProcessRawPackets(s.packetBuffer,s.inputs,&s.pendingId,s.state)
+		// fmt.Println("toi day roi")
+		s.world.AcceptPendingclients(&s.pendingId,&acceptEntities)
+		s.sessions.CheckTimeouts(s.state.TickCount,&delsEntities)
+		s.world.RemoveEntities(&delsEntities)
+		// fmt.Println("toi day roi")
+		s.sessions.SyncNetEntity(&acceptEntities,s.mapDataCache)
+	
 		s.world.Tick(dt, s.inputs, outbox)
-		s.netIO.BroadcastState(s.world.Engine, s.state)
+		s.sessions.FlushNetworkOutbox(outbox)
+		
+		s.netIO.BroadcastState(s.world.Engine, s.state,&s.sessions.clients,outbox)
+		outbox.Reset()
+
+		elapsed := time.Since(start)
+		totalWorkTime += elapsed
+		tickCount++
+		if elapsed > maxTickTime {
+			maxTickTime = elapsed
+		}
+		if time.Since(lastReport) >= time.Second {
+			avgTick := totalWorkTime / time.Duration(tickCount)
+			
+			// Tính toán Load % (Ví dụ: 8ms / 16.6ms = 48% Load)
+			loadPercent := float64(avgTick.Microseconds()) / float64(targetTickTime.Microseconds()) * 100
+			
+			// fmt.Printf("\n[📊 SERVER PERFORMANCE]\n")
+			fmt.Printf("Tick Rate: %d TPS | ", tickCount)
+			fmt.Printf("Avg Work Time: %v | Max Tick: %v| ", avgTick, maxTickTime)
+			fmt.Printf("CPU Game Load: %.2f%%| ", loadPercent)
+			fmt.Printf("Entities: %d | Active Clients: %d| ", s.world.Engine.NextIndex, s.sessions.nextClientID)
+
+			if avgTick > targetTickTime {
+				fmt.Printf("⚠️  [WARNING] Server đang bị LAG! Logic chậm hơn 16.6ms| ")
+			}
+			fmt.Printf("---------------------------\n")
+
+			// Reset bộ đếm cho giây tiếp theo
+			totalWorkTime = 0
+			maxTickTime = 0
+			tickCount = 0
+			lastReport = time.Now()
+		}
+		// fmt.Println("toi day roi")
 
 	}
 }

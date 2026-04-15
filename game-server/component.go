@@ -1,6 +1,9 @@
 package main
 
-import def "game/pkg"
+import (
+	def "game/pkg"
+	"math/bits"
+)
 
 // --- NHÓM VẬT LÝ ---
 type Transform struct { X, Y float32; Angle uint16 }
@@ -71,7 +74,7 @@ type TagToxic struct{}
 type TagIce struct{}
 type TagWind struct{}
 type TagStone struct{}
-type TagLightning struct{}
+
 type TagArea struct{}     // Đây là một vùng đất (AOE) chứ không phải đạn bay
 type TagStatic struct{}
 type TagGhost struct{}
@@ -156,34 +159,53 @@ type OverlapEvent struct {
     SourceID Entity 
     TargetID  Entity
 }
-type VisionMask struct{
-    bits [16]uint64
-}
-func ( s *VisionMask)Set(index uint16){
-    s.bits[index/64]=(s.bits[index/64] | ( 1 <<(index%64)))
-}
-func( s *VisionMask)Has(index uint16) bool{
-    return ( s.bits[index/64] & ( 1<<(index%64)) )!=0
-}
-func( s *VisionMask)Clear(){
-    for i:=range s.bits{
-        s.bits[i]=0
-    }
-}
-type SpatialState struct{
-    OldCell uint16
-    CurrentCell uint16 
-}
+type CellsVisibilityMask [VisionGridCols*VisionGridRows] VisibilityMask
 type VisibilityMask struct{
     KnownByTeams [4]uint64
 }
 func ( m *VisibilityMask)Has(teamID uint8) bool{
-    return (m.KnownByTeams[teamID/64] & ( 1 << (teamID%64)) ) !=0
+    return (m.KnownByTeams[teamID>>6] & (uint64(1) << (teamID & 63))) != 0
 }
 func ( m *VisibilityMask)Set(teamID uint8){
-    m.KnownByTeams[teamID/64] = m.KnownByTeams[teamID/64] | (1 << (teamID%64))
+    m.KnownByTeams[teamID>>6] |= (uint64(1) << (teamID & 63))
 }
+func( m *VisibilityMask)Clear(){
+    for i:=range m.KnownByTeams{
+        m.KnownByTeams[i]=0
+    }
+}
+
+func ( m *VisibilityMask)Or(other VisibilityMask){
+    for i:=range m.KnownByTeams{
+        m.KnownByTeams[i]|=other.KnownByTeams[i]
+    }    
+}
+func (m *VisibilityMask) AndNot(other VisibilityMask) VisibilityMask {
+    res := VisibilityMask{}
+    for i := range m.KnownByTeams {
+       res.KnownByTeams[i] = m.KnownByTeams[i] &^ other.KnownByTeams[i]
+    }   
+    return res 
+}
+
+func (m *VisibilityMask) ForAll(logic func(teamID uint8)) {
+    sum := 0
+    for i := range m.KnownByTeams {
+        v := m.KnownByTeams[i]
+        for v != 0 {
+            n := bits.TrailingZeros64(v)
+            logic(uint8(sum + n))
+            v &= ^(uint64(1) << n) // FIX 3: Đã thêm uint64(1)
+        }
+        sum += 64
+    }   
+}
+type TrajectoryChanged struct { }
+
 type NetVisual struct{
     createRawEvent func( tran Transform)RawEvent
 }
 type TagPlayer struct{}
+type SightRange  struct{
+    Radius float32
+}

@@ -4,6 +4,7 @@ import (
 	def "game/pkg"
 	"math"
 )
+
 type ZoneInfo struct {
 	X, Y        float32
 	Radius      float32
@@ -11,145 +12,190 @@ type ZoneInfo struct {
 	Damage      int16
 	ShrinkTimer uint64  // Đếm ngược tới lúc thu bo
 }
-
-
-// Server gửi tọa độ và Loại hiệu ứng (VD: 1 = Nổ Lửa, 2 = Nổ Độc)
-
+// Hàm hỗ trợ tính Vận tốc
 func getVelocity(angle uint16, speed float32) (float32, float32) {
 	rad := float64(angle) * (math.Pi / 180.0)
 	return float32(math.Cos(rad)) * speed, float32(math.Sin(rad)) * speed
 }
+
+// ==========================================
+// 1. HỆ LỬA (FIRE)
+// ==========================================
 func SpawnFireball(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
 	e := engine.CreateEntity()
 	vx, vy := getVelocity(angle, 1200.0)
-	addComponent(engine,e,TagProjectile{})
+	
+	addComponent(engine, e, TagProjectile{})
 	addComponent(engine, e, TagFire{})
 	addComponent(engine, e, Transform{X: x, Y: y, Angle: angle})
 	addComponent(engine, e, Velocity{Dx: vx, Dy: vy})
-	addComponent(engine, e, Collider{ShapeType: 1, Radius: 20}) // Đạn hình tròn
+	addComponent(engine, e, Collider{ShapeType: 1, Radius: 20})
 	addComponent(engine, e, Faction{TeamID: team})
-	addComponent(engine, e, ScheduledTask{TimeLeft: 0.40})
-	addComponent(engine,e,Fragile{})
-	addComponent(engine, e, DamageDealer{
-		SourceID: owner, Amount: 0, DestroyOnHit: true, // Chạm là nổ
-	})
-	
-	addComponent(engine,e,SpawnOnDead{
-		Action: func( x ,y float32 ) {
-			e := engine.CreateEntity()
-			addComponent(engine,e,Transform{X: x,Y: y})
-			addComponent(engine,e,Collider{ShapeType: 1,Radius: 100})
-			addComponent(engine,e,Faction{TeamID: team})
-			addComponent(engine,e,DamageDealer{Effects: nil,Amount: 200,SourceID: owner,DestroyOnHit: false})
-			addComponent(engine,e,ScheduledTask{TimeLeft: 0.020})
-			// ev :=
+	addComponent(engine, e, ScheduledTask{TimeLeft: 0.4})
+	addComponent(engine, e, Fragile{})
+	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 0, DestroyOnHit: true})
 
-			addComponent(engine,e,NetVisual{
+	// --- LOGIC TẦM NHÌN ---
+	addComponent(engine, e, VisibilityMask{})
+	addComponent(engine, e, NetVisual{
+		createRawEvent: func(tran Transform) RawEvent {
+			return NewSpawnProjectEvent(e, def.SpellFireball, tran.X, tran.Y, tran.Angle)
+		},
+	})
+
+	// --- VỤ NỔ KHI CHẾT ---
+	addComponent(engine, e, SpawnOnDead{
+		Action: func(x, y float32) {
+			exp := engine.CreateEntity()
+			addComponent(engine, exp, Transform{X: x, Y: y})
+			addComponent(engine, exp, Collider{ShapeType: 1, Radius: 100})
+			addComponent(engine, exp, Faction{TeamID: team})
+			addComponent(engine, exp, ScheduledTask{TimeLeft: 0.020})
+			addComponent(engine, exp, DamageDealer{Amount: 200, SourceID: owner, DestroyOnHit: false})
+
+			// Vụ nổ cũng cần tầm nhìn (Fog piercing)
+			addComponent(engine, exp, VisibilityMask{})
+			addComponent(engine, exp, NetVisual{
 				createRawEvent: func(tran Transform) RawEvent {
-					return NewSpawnVFXCircleEvent(def.VFXFireExplosion,x,y,100,0.020)
+					return NewSpawnVFX(def.VFXFireExplosion,e, tran.X, tran.Y, 100) // Client vẽ nổ 0.5s
 				},
 			})
-			// engine.FrameEvents = append(engine.FrameEvents, ev)
 		},
 	})
-	// ev := NewSpawnProjectEvent(e,def.SpellFireball,x,y,angle)
-	// engine.FrameEvents=append(engine.FrameEvents, ev)
-	addComponent(engine,e,NetVisual{
-		createRawEvent: func(tran Transform) RawEvent {
-			ev :=NewSpawnProjectEvent(e,def.SpellFireball,tran.X,tran.Y,tran.Angle)
-			return ev
-		},
-	})
-
-
-	// Chú ý: Việc nổ AoE 100 units sẽ được xử lý trong HitboxSystem khi viên đạn này bị DestroyOnHit.
 }
 
 func SpawnFlamewall(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16) {
 	e := engine.CreateEntity()
-	
-	// Tính tọa độ xuất hiện của tường lửa (Cách người chơi 100 units)
-	if dist > 400{
-		dist = 400
-	}
+	if dist > 400 { dist = 400 }
 	rad := float64(angle) * (math.Pi / 180.0)
 	spawnX := x + float32(math.Cos(rad))*float32(dist)
 	spawnY := y + float32(math.Sin(rad))*float32(dist)
 
 	addComponent(engine, e, TagFire{})
 	addComponent(engine, e, Transform{X: spawnX, Y: spawnY, Angle: angle})
-	addComponent(engine, e, Collider{ShapeType: def.ShapeOBB, Width: 150, Height: 200}) // Tường hình chữ nhật (xoay ngang)
+	// Gán thêm Radius bù trừ để VisionTriggerSystem hoạt động với hình Chữ nhật
+	addComponent(engine, e, Collider{ShapeType: def.ShapeOBB, Width: 150, Height: 200, Radius: 125}) 
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 4.0})
-	
-
-	igniteEffect := EffectPayload{
-		EffectType: def.EffectFire,
-		Value:      50,   // 15 Sát thương
-		TickRate:   1.0,  // Mỗi 1 giây
-		Duration:   3.0,  // Kéo dài 2 giây
-	}
-	// Tường lửa không bay, nó nằm trên đất và gây TickEffect (Đốt cháy)
 	addComponent(engine, e, DamageDealer{
-		SourceID: owner, Amount: 70, DestroyOnHit: false, // Đi xuyên qua,
-		Effects: []EffectPayload{igniteEffect},
-		TickRate: 0.5,
-
-		// Ty
-
+		SourceID: owner, Amount: 70, DestroyOnHit: false, TickRate: 0.5,
+		Effects: []EffectPayload{{EffectType: def.EffectFire, Value: 50, TickRate: 1.0, Duration: 3.0}},
 	})
-	// ev :=NewSpawnVFXBoxEvent(def.VFXFireExplosion,spawnX,spawnY,150	,200,4,angle)
-	// engine.FrameEvents=append(engine.FrameEvents, ev)
-	// Gắn thêm component buff Ignite cho ai đi ngang qua (Xử lý ở hệ thống va chạm)
+
+	// --- LOGIC TẦM NHÌN ---
+	addComponent(engine, e, VisibilityMask{})
+	addComponent(engine, e, NetVisual{
+		createRawEvent: func(tran Transform) RawEvent {
+			return NewSpawnVFX(def.VFXFlamewall,e, tran.X, tran.Y,tran.Angle)
+		},
+	})
 }
+
+// ==========================================
+// 2. HỆ ĐỘC (POISON)
+// ==========================================
 func SpawnToxicSpray(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
-	// Bắn 5 viên shotgun, lệch nhau -20, -10, 0, 10, 20 độ
 	offsets := []int{-20, -10, 0, 10, 20}
 	for _, offset := range offsets {
 		e := engine.CreateEntity()
 		finalAngle := uint16((int(angle) + offset + 360) % 360)
-		vx, vy := getVelocity(finalAngle, 800.0) // Bay chậm hơn
-		addComponent(engine,e,TagProjectile{})
+		vx, vy := getVelocity(finalAngle, 800.0)
+		
+		addComponent(engine, e, TagProjectile{})
 		addComponent(engine, e, TagToxic{})
 		addComponent(engine, e, Transform{X: x, Y: y, Angle: finalAngle})
 		addComponent(engine, e, Velocity{Dx: vx, Dy: vy})
 		addComponent(engine, e, Collider{ShapeType: 1, Radius: 10})
 		addComponent(engine, e, Faction{TeamID: team})
-		addComponent(engine, e, ScheduledTask{TimeLeft: 0.5}) // Bay 400 units (800 * 0.5)
+		addComponent(engine, e, ScheduledTask{TimeLeft: 0.5})
 		addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 100, DestroyOnHit: true})
-		addComponent(engine,e, Fragile{})
+		addComponent(engine, e, Fragile{})
 
-		// ev := NewSpawnProjectEvent(e,def.SpellToxicSpray,x,y,finalAngle)
-		// engine.FrameEvents=append(engine.FrameEvents, ev)
+		// --- LOGIC TẦM NHÌN ---
+		addComponent(engine, e, VisibilityMask{})
+		addComponent(engine, e, NetVisual{
+			createRawEvent: func(tran Transform) RawEvent {
+				return NewSpawnProjectEvent(e, def.SpellToxicSpray, tran.X, tran.Y, tran.Angle)
+			},
+		})
 	}
 }
 
 func SpawnToxicCloud(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16) {
 	e := engine.CreateEntity()
-	if dist > 200{
-		dist = 200
-	}
+	if dist > 200 { dist = 200 }
 	rad := float64(angle) * (math.Pi / 180.0)
 	spawnX := x + float32(math.Cos(rad))*float32(dist)
 	spawnY := y + float32(math.Sin(rad))*float32(dist)
+
 	addComponent(engine, e, TagToxic{})
 	addComponent(engine, e, Transform{X: spawnX, Y: spawnY})
-	addComponent(engine, e, Collider{ShapeType: 1, Radius: 300}) // Đám mây tròn to
+	addComponent(engine, e, Collider{ShapeType: 1, Radius: 300})
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 8.0})
-	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 50, DestroyOnHit: false,TickRate: 0.5})
-	// ev :=NewSpawnVFXBoxEvent(VfX,spawnX,spawnY,150	,200,4,angle)
-	// ev :=NewSpawnVFXCircleEvent(def.VFXToxicCloud,spawnX,spawnY,300,8)
-	// engine.FrameEvents=append(engine.FrameEvents, ev)
+	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 50, DestroyOnHit: false, TickRate: 0.5})
+
+	// --- LOGIC TẦM NHÌN ---
+	addComponent(engine, e, VisibilityMask{})
+	addComponent(engine, e, NetVisual{
+		createRawEvent: func(tran Transform) RawEvent {
+			return NewSpawnVFX(def.VFXToxicCloud,e, tran.X, tran.Y, 0)
+		},
+	})
 }
 
 // ==========================================
-// 3. HỆ BĂNG (ICE)
+// 3. HỆ BĂNG (ICE) & CÁC HỆ KHÁC TƯƠNG TỰ
 // ==========================================
+func SpawnFlashFreeze(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16) {
+	if dist > 300 { dist = 300 }
+	rad := float64(angle) * (math.Pi / 180.0)
+	spawnX := x + float32(math.Cos(rad))*float32(dist)
+	spawnY := y + float32(math.Sin(rad))*float32(dist)
+	
+	e := engine.CreateEntity()
+	addComponent(engine, e, Transform{X: spawnX, Y: spawnY})
+	addComponent(engine, e, Faction{TeamID: team})
+	addComponent(engine, e, ScheduledTask{TimeLeft: 0.75}) // Thời gian cảnh báo
+	
+	// PHẢI CÓ COLLIDER ĐỂ HỆ THỐNG VISION TÍNH ĐƯỢC TẦM NHÌN
+	addComponent(engine, e, Collider{ShapeType: 1, Radius: 250.0}) 
+	
+	// --- LOGIC TẦM NHÌN: CẢNH BÁO ---
+	addComponent(engine, e, VisibilityMask{})
+	addComponent(engine, e, NetVisual{
+		createRawEvent: func(tran Transform) RawEvent {
+			return NewSpawnVFX(def.VFXIceWarning, e,tran.X, tran.Y,0)
+		},
+	})
+
+	// --- LOGIC TẦM NHÌN: VỤ NỔ ---
+	addComponent(engine, e, SpawnOnDead{
+		Action: func(x, y float32) {
+			exp := engine.CreateEntity()
+			addComponent(engine, exp, TagIce{})
+			addComponent(engine, exp, Transform{X: x, Y: y})
+			addComponent(engine, exp, Collider{ShapeType: 1, Radius: 250.0})
+			addComponent(engine, exp, Faction{TeamID: team})
+			addComponent(engine, exp, ScheduledTask{TimeLeft: 0.05})
+			addComponent(engine, exp, DamageDealer{
+				Effects: []EffectPayload{{EffectType: def.EffectStun, Duration: 2.0, RemoveMask: GetMask[TagStunned]()}},
+			})
+			
+			addComponent(engine, exp, VisibilityMask{})
+			addComponent(engine, exp, NetVisual{
+				createRawEvent: func(tran Transform) RawEvent {
+					return NewSpawnVFX(def.VFXIceExplosion,e, tran.X, tran.Y, 250)
+				},
+			})
+		},
+	})
+}
 func SpawnIceLance(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
 	e := engine.CreateEntity()
 	vx, vy := getVelocity(angle, 500) // Bắn cực nhanh
-	addComponent(engine,e,TagProjectile{})
+	
+	addComponent(engine, e, TagProjectile{})
 	addComponent(engine, e, TagIce{})
 	addComponent(engine, e, Transform{X: x, Y: y, Angle: angle})
 	addComponent(engine, e, Velocity{Dx: vx, Dy: vy})
@@ -157,157 +203,139 @@ func SpawnIceLance(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 1.0})
 	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 70, DestroyOnHit: false})
-    // ev :=	
 
-	addComponent(engine, e, TrailEmitter{Interval: 0.05, Timer: 0,
-		Action: func(x, y float32) {
-			 e :=engine.CreateEntity()
-			//  addComponent(engine, e, TagStatic{})
-			 addComponent(engine,e,Transform{X: x,Y:y})
-			 addComponent(engine,e,Collider{ShapeType: 1,Radius: 15})
-			 addComponent(engine,e,Faction{TeamID: 255})
-			 addComponent(engine,e,DamageDealer{
-				Amount: 0,
-				DestroyOnHit: false,
-				TickRate: 0.2,
-				SourceID: owner,
-				Effects: []EffectPayload{
-					{
-						EffectType: def.EffectStatBuff,
-						Value: 0.5,
-						Duration: 0.3,
-						Stat: def.StatSpeed,
-					},
-				},
-			 })
-			 addComponent(engine,e,ScheduledTask{TimeLeft: 2.0})
-            // ev := NewSpawnVFXCircleEvent(def.VFXIceTrail,x,y,15,2 )
-	        // engine.FrameEvents = append(engine.FrameEvents, ev)
-		},}) 
-	//  ev := NewSpawnProjectEvent( e, def.SpellIceLance, x, y, angle)
-	// engine.FrameEvents = append(engine.FrameEvents, ev)
-}
-
-func SpawnFlashFreeze(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16) {
-		if dist > 300{
-		dist = 300
-	}
-	rad := float64(angle) * (math.Pi / 180.0)
-	spawnX := x + float32(math.Cos(rad))*float32(dist)
-	spawnY := y + float32(math.Sin(rad))*float32(dist)
-	e := engine.CreateEntity()
-	addComponent(engine, e, ScheduledTask{TimeLeft: 0.75})
-	addComponent(engine, e, Transform{X: spawnX, Y: spawnY})
-	addComponent(engine,e,Faction{TeamID: team})
-
-	addComponent(engine,e,SpawnOnDead{
-		Action: func(x, y float32) {
-			//fmt.println(" tao dong bang roi ")
-			e := engine.CreateEntity()
-			addComponent(engine, e, TagIce{})
-			addComponent(engine, e, Transform{X: spawnX, Y: spawnY})
-			addComponent(engine,e,Collider{ShapeType:1,Radius: 250.0})
-			addComponent(engine,e,Faction{TeamID: team})
-			addComponent(engine, e, ScheduledTask{TimeLeft: 0.05})
-			
-			addComponent(engine,e,DamageDealer{
-				Effects: []EffectPayload{
-					EffectPayload{
-						EffectType: def.EffectStun,
-						Duration: 2.0,
-						RemoveMask: GetMask[TagStunned](),
-					},
-				},
-			})
-			// burstEv := NewSpawnVFXCircleEvent(def.VFXIceExplosion, x, y, 250, 0.5)
-			// engine.FrameEvents = append(engine.FrameEvents, burstEv)
+	// --- LOGIC TẦM NHÌN (Viên đạn băng) ---
+	addComponent(engine, e, VisibilityMask{})
+	addComponent(engine, e, NetVisual{
+		createRawEvent: func(tran Transform) RawEvent {
+			return NewSpawnProjectEvent(e, def.SpellIceLance, tran.X, tran.Y, tran.Angle)
 		},
 	})
-	// ev := NewSpawnVFXCircleEvent(def.VFXIceWarning, spawnX, spawnY, 250, 0.75)
-	// engine.FrameEvents = append(engine.FrameEvents, ev)
-	// addComponent(engine, e, DelayedAction{Timer: 0.75, ActionID: 1}) // 0.75s sau kích hoạt nổ Stun
+
+	// --- VỆT BĂNG ĐỂ LẠI (Trail Emitter) ---
+	addComponent(engine, e, TrailEmitter{
+		Interval: 0.05, 
+		Timer: 0,
+		Action: func(tx, ty float32) {
+			trail := engine.CreateEntity()
+			addComponent(engine, trail, Transform{X: tx, Y: ty})
+			addComponent(engine, trail, Collider{ShapeType: 1, Radius: 15}) // Phải có Collider để tính tầm nhìn
+			addComponent(engine, trail, Faction{TeamID: team}) // Cho team mình để buff tốc
+			addComponent(engine, trail, DamageDealer{
+				Amount: 0, DestroyOnHit: false, TickRate: 0.2, SourceID: owner,
+				Effects: []EffectPayload{
+					{EffectType: def.EffectStatBuff, Value: 0.5, Duration: 0.3, Stat: def.StatSpeed},
+				},
+			})
+			addComponent(engine, trail, ScheduledTask{TimeLeft: 2.0})
+
+			// Tầm nhìn cho từng cục Trail
+			addComponent(engine, trail, VisibilityMask{})
+			addComponent(engine, trail, NetVisual{
+				createRawEvent: func(tran Transform) RawEvent {
+					return NewSpawnVFX(def.VFXIceTrail,trail, tran.X, tran.Y, 15)
+				},
+			})
+		},
+	})
 }
 
-// // ==========================================
-// // 4. HỆ GIÓ (WIND)
-// // ==========================================
+// ==========================================
+// 4. HỆ GIÓ (WIND)
+// ==========================================
 func SpawnWindShear(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
 	e := engine.CreateEntity()
 	vx, vy := getVelocity(angle, 1500.0)
-	// addComponent(engine,e,TagProjectile{})
+	
+	addComponent(engine, e, TagProjectile{}) // Đạn xuyên thấu có thể đập tường nảy lại
 	addComponent(engine, e, TagWind{})
 	addComponent(engine, e, Transform{X: x, Y: y, Angle: angle})
 	addComponent(engine, e, Velocity{Dx: vx, Dy: vy})
-	addComponent(engine, e, Collider{ShapeType: 1, Radius: 15}) // Hình cung/chữ nhật
+	addComponent(engine, e, Collider{ShapeType: 1, Radius: 15})
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 0.4})
-	addComponent(engine,e,Bounce{Remaining: 1})
-	// Đạn xuyên thấu (DestroyOnHit: false)
+	addComponent(engine, e, Bounce{Remaining: 1})
 	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 0, DestroyOnHit: false})
-	// ev :=NewSpawnProjectEvent(e,def.SpellWindShear,x,y,angle)
-	// engine.FrameEvents=append(engine.FrameEvents, ev)
+
+	// --- LOGIC TẦM NHÌN ---
+	addComponent(engine, e, VisibilityMask{})
+	addComponent(engine, e, NetVisual{
+		createRawEvent: func(tran Transform) RawEvent {
+			return NewSpawnProjectEvent(e, def.SpellWindShear, tran.X, tran.Y, tran.Angle)
+		},
+	})
 }
 
-func SpawnTornado(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16)  {
-	if dist > 400{
-		dist = 300
-	}
+func SpawnTornado(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16) {
+	if dist > 400 { dist = 300 }
 	rad := float64(angle) * (math.Pi / 180.0)
 	spawnX := x + float32(math.Cos(rad))*float32(dist)
 	spawnY := y + float32(math.Sin(rad))*float32(dist)
-	e := engine.CreateEntity()
-
 	
+	e := engine.CreateEntity()
 	addComponent(engine, e, TagWind{})
 	addComponent(engine, e, Transform{X: spawnX, Y: spawnY})
 	addComponent(engine, e, Faction{TeamID: team})
-	addComponent(engine, e,ScheduledTask{TimeLeft: 6.0,})
-	addComponent(engine,e,Collider{ShapeType: 1,Radius: 350})
+	addComponent(engine, e, ScheduledTask{TimeLeft: 6.0})
+	addComponent(engine, e, Collider{ShapeType: 1, Radius: 350}) // Bán kính hút gió
 	addComponent(engine, e, PullForce{Force: 200.0})
 
-	// ev := NewSpawnVFXCircleEvent(def.VFXTornado,spawnX,spawnY,350,6)
-	// engine.FrameEvents=append(engine.FrameEvents, ev)
+	// --- LOGIC TẦM NHÌN ---
+	addComponent(engine, e, VisibilityMask{})
+	addComponent(engine, e, NetVisual{
+		createRawEvent: func(tran Transform) RawEvent {
+			return NewSpawnVFX(def.VFXTornado, e,tran.X, tran.Y, 0)
+		},
+	})
 }
+
+// ==========================================
+// 5. HỆ ĐẤT (STONE)
+// ==========================================
 func SpawnShockwave(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
 	e := engine.CreateEntity()
-	
-	// Vì hình chữ nhật dài tới 800, nếu spawn ở tâm người chơi thì 400 units sẽ nằm ở... sau lưng.
-	// Ta dời tâm của sóng đất lên phía trước 400 units để nó quét từ người chơi quét ra.
-	rad := float64(angle) * (math.Pi / 180.0)
-	spawnX := x + float32(math.Cos(rad))*200.0
-	spawnY := y + float32(math.Sin(rad))*200.0
-	
-	// Sóng đất trượt đi với tốc độ vừa phải
+	// rad := float64(angle) * (math.Pi / 180.0)
+	// spawnX := x + float32(math.Cos(rad))*200.0
+	// spawnY := y + float32(math.Sin(rad))*200.0
 	vx, vy := getVelocity(angle, 750.0)
 
 	addComponent(engine, e, TagProjectile{})
-	// Thêm TagStone nếu bạn có
-	addComponent(engine, e, Transform{X: spawnX, Y: spawnY, Angle: angle})
+	addComponent(engine, e, TagStone{})
+	addComponent(engine, e, Transform{X: x, Y: y, Angle: angle})
 	addComponent(engine, e, Velocity{Dx: vx, Dy: vy})
 	
-	// Hình chữ nhật: Rộng 100, Dài 800 (Xoay theo hướng bắn)
-	addComponent(engine, e, Collider{ShapeType: def.ShapeOBB, Width: 50, Height: 400})
+	// Lưu ý: ShapeOBB nhưng phải có Radius nội tiếp/ngoại tiếp để hệ thống Vision quét được
+	addComponent(engine, e, Collider{ShapeType: def.ShapeOBB, Width: 50, Height: 400, Radius: 200})
+	
 	addComponent(engine, e, Faction{TeamID: team})
-	
-	// Xuyên người (DestroyOnHit: false), nhưng Đập tường là vỡ (Fragile)
 	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 75, DestroyOnHit: false})
-	addComponent(engine, e, Fragile{}) 
-	
-	// Tồn tại 0.6s (Trượt được thêm 600 units rồi tự tan biến)
-	addComponent(engine, e, ScheduledTask{TimeLeft: 1})
+	addComponent(engine, e, Fragile{}) // Đập tường là vỡ
+	addComponent(engine, e, ScheduledTask{TimeLeft: 1.0})
 
-	// ev := NewSpawnProjectEvent(e, def.SpellShockwave, spawnX, spawnY, angle)
-	// engine.FrameEvents = append(engine.FrameEvents, ev)
+	// --- LOGIC TẦM NHÌN ---
+	addComponent(engine, e, VisibilityMask{})
+	addComponent(engine, e, NetVisual{
+		createRawEvent: func(tran Transform) RawEvent {
+			return NewSpawnProjectEvent(e, def.SpellShockwave, tran.X, tran.Y, tran.Angle)
+		},
+	})
 }
+
 func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, aimX, aimY float32) {
 	// 1. TẠO BÓNG TÂM ĐIỂM (Cảnh báo 1.2s)
 	e := engine.CreateEntity()
 	addComponent(engine, e, Transform{X: aimX, Y: aimY})
+	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 1.2})
-
-	// Báo Client vẽ vòng tròn cảnh báo màu Đất
-	// warnEv := NewSpawnVFXCircleEvent(def.VFXBoulderWarning, aimX, aimY, 180.0, 1.2)
-	// engine.FrameEvents = append(engine.FrameEvents, warnEv)
+	addComponent(engine, e, Collider{ShapeType: 1, Radius: 180.0}) // Bắt buộc phải có để quét Vision
+	
+	// --- LOGIC TẦM NHÌN CẢNH BÁO ---
+	addComponent(engine, e, VisibilityMask{})
+	addComponent(engine, e, NetVisual{
+		createRawEvent: func(tran Transform) RawEvent {
+			return NewSpawnVFX(def.VFXBoulderWarning, e,tran.X, tran.Y, 180.0)
+		},
+	})
 
 	// 2. ĐÁ RƠI XUỐNG VÀ NỔ BÙM
 	addComponent(engine, e, SpawnOnDead{
@@ -317,86 +345,16 @@ func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, aimX, aimY f
 			addComponent(engine, hitbox, Collider{ShapeType: def.ShapeCircle, Radius: 180.0})
 			addComponent(engine, hitbox, Faction{TeamID: team})
 			addComponent(engine, hitbox, TagArea{}) // Vùng sát thương tĩnh
-			
-			// Tồn tại 1 frame để quét sát thương
-			addComponent(engine, hitbox, ScheduledTask{TimeLeft: 0.020})
+			addComponent(engine, hitbox, ScheduledTask{TimeLeft: 0.05}) // Tồn tại 1 nhịp để gây sát thương
+			addComponent(engine, hitbox, DamageDealer{SourceID: owner, Amount: 200, DestroyOnHit: false})
 
-			// Sát thương CỰC MẠNH: 200
-			addComponent(engine, hitbox, DamageDealer{
-				SourceID: owner, Amount: 200, DestroyOnHit: false,
+			// --- LOGIC TẦM NHÌN VỤ NỔ ĐẤT ĐÁ ---
+			addComponent(engine, hitbox, VisibilityMask{})
+			addComponent(engine, hitbox, NetVisual{
+				createRawEvent: func(tran Transform) RawEvent {
+					return NewSpawnVFX(def.VFXBoulderCrash,e, tran.X, tran.Y, 0) // Client vẽ hiệu ứng nổ 0.6s
+				},
 			})
-
-			// Báo Client vẽ vụ nổ Đất Đá
-			// crashEv := NewSpawnVFXCircleEvent(def.VFXBoulderCrash, x, y, 180.0, 0.6)
-			// engine.FrameEvents = append(engine.FrameEvents, crashEv)
 		},
 	})
 }
-// // ==========================================
-// // 5. HỆ ĐẤT VÀ HỆ SÉT
-// // ==========================================
-// // Bạn có thể tự viết hàm SpawnShockwave (Tương tự IceLance nhưng ShapeType = 2 (Box) và có TagGroundProjectile).
-// // SpawnBoulderfall và SpawnLightningStrike sử dụng y hệt logic của FlashFreeze (Dùng DelayedAction).
-// func SpawnSockWave(engine *ArchEngine, owner Entity, team uint8, x,y float32, angle uint16){
-// 	e := engine.CreateEntity()
-// 	vx,vy :=getVelocity(angle,500)
-
-
-// 	addComponent(engine,e,Transform{X: x,Y: y,Angle: angle})
-// 	addComponent(engine,e,Collider{ShapeType: 2,Height: 800,Width: 100})
-// 	addComponent(engine,e,Velocity{Dx: vx,Dy: vy})
-// 	addComponent(engine,e,Faction{TeamID: team})
-// 	addComponent(engine,e,ScheduledTask{TimeLeft: 1.0,TaskType: Task_DestroyEntity})
-// 	addComponent(engine,e,DamageDealer{
-// 		Amount: 75,
-// 		SourceID: owner,
-// 		// Type: ,
-// 		DestroyOnHit: false,
-
-// 	})
-// }
-// func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, x,y float32){
-// 	e := engine.CreateEntity()
-
-
-// 	addComponent(engine,e,Transform{X: x,Y: y})
-// 	addComponent(engine,e,Collider{ShapeType: 1,Radius: 180})
-// 	addComponent(engine,e,Faction{TeamID: team})
-// 	addComponent(engine,e,ScheduledTask{TimeLeft: 1.2,TaskType: Task_Explode})
-// 	addComponent(engine,e,DamageDealer{
-// 		Amount: 200,
-// 		SourceID: owner,
-// 		// Type: ,
-// 		DestroyOnHit: false,
-
-// 	})	
-// }
-// func SpawnLightningBolt(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
-// 	// HITSCAN: Không sinh Entity bay. Bắn 1 tia rọi thẳng từ X, Y tới AimAngle độ dài 1000 units.
-// 	// Check va chạm ngay lập tức trong hàm này, hoặc đẻ ra 1 Entity tĩnh dài 1000 units tồn tại 0.1s.
-	
-// 	e := engine.CreateEntity()
-// 	addComponent(engine, e, TagLightning{})
-	
-// 	// Tính điểm cuối của tia sét
-// 	rad := float64(angle) * (math.Pi / 180.0)
-// 	endX := x + float32(math.Cos(rad))*1000.0
-// 	endY := y + float32(math.Sin(rad))*1000.0
-	
-// 	// Tạo 1 BoxCollider bao phủ từ điểm đầu đến điểm cuối
-// 	addComponent(engine, e, Transform{X: (x+endX)/2, Y: (y+endY)/2, Angle: angle})
-// 	addComponent(engine, e, Collider{ShapeType: 2, Width: 1000, Height: 20})
-// 	addComponent(engine, e, Faction{TeamID: team})
-// 	addComponent(engine, e, ScheduledTask{TimeLeft: 0.1,TaskType: Task_DestroyEntity})
-// 	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 30, DestroyOnHit: false}) // Xuyên thấu
-// }
-// func SpawnLightningStrike(engine *ArchEngine, owner Entity,team uint8, x,y float32){
-// 	e := engine.CreateEntity()
-// 	addComponent(engine, e, Transform{X: x, Y: y})
-// 	addComponent(engine, e, Collider{ShapeType: 1, Radius: 200})
-// 	addComponent(engine, e, Faction{TeamID: team})
-// 	// addComponent(engine, e, Lifespan{TimeLeft: 0.1}) // Biến mất sau 1 tick để vẽ UI
-// 	addComponent(engine,e,ScheduledTask{TimeLeft: 0.6,TaskType: Task_DestroyEntity})
-// 	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 120, DestroyOnHit: false}) // Xuyên thấu	
-// 	addComponent(engine,e, TagSilenced{})
-// }
