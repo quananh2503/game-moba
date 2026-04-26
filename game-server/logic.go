@@ -17,6 +17,40 @@ func getVelocity(angle uint16, speed float32) (float32, float32) {
 	rad := float64(angle) * (math.Pi / 180.0)
 	return float32(math.Cos(rad)) * speed, float32(math.Sin(rad)) * speed
 }
+func CalculateAABB(shape def.Shape, radius, width, height float32, angle uint16) BoundingBox {
+    switch shape {
+    case def.ShapeCircle:
+        // Khung bao hình tròn là hình vuông cạnh 2*Radius
+        return BoundingBox{HalfW: radius, HalfH: radius}
+
+    case def.ShapeBox:
+        // Hình chữ nhật thẳng, không quay
+        return BoundingBox{HalfW: width * 0.5, HalfH: height * 0.5}
+
+    case def.ShapeOBB:
+        // Hình chữ nhật có quay (Nhưng chỉ quay 1 lần lúc sinh ra)
+        // Lấy góc đã ép về [0, 360)
+        safeAngle := angle % 360 
+        
+        // Dùng Bảng LUT của bạn (Tránh dùng math.Abs vì LUT đã có thể chứa số âm)
+        cosA := CosTable[safeAngle]
+        if cosA < 0 { cosA = -cosA } // Hàm trị tuyệt đối tự viết, nhanh hơn gọi math.Abs
+        
+        sinA := SinTable[safeAngle]
+        if sinA < 0 { sinA = -sinA }
+
+        halfW := width * 0.5
+        halfH := height * 0.5
+
+        // Công thức chiếu OBB xuống trục X và Y
+        return BoundingBox{
+            HalfW: (halfW * cosA) + (halfH * sinA),
+            HalfH: (halfW * sinA) + (halfH * cosA),
+        }
+    default:
+        return BoundingBox{}
+    }
+}
 
 // ==========================================
 // 1. HỆ LỬA (FIRE)
@@ -30,6 +64,7 @@ func SpawnFireball(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 	addComponent(engine, e, Transform{X: x, Y: y, Angle: angle})
 	addComponent(engine, e, Velocity{Dx: vx, Dy: vy})
 	addComponent(engine, e, Collider{ShapeType: 1, Radius: 20})
+	addComponent(engine, e, CalculateAABB(def.ShapeCircle, 20, 0, 0, 0))
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 0.4})
 	addComponent(engine, e, Fragile{})
@@ -49,6 +84,7 @@ func SpawnFireball(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 			exp := engine.CreateEntity()
 			addComponent(engine, exp, Transform{X: x, Y: y})
 			addComponent(engine, exp, Collider{ShapeType: 1, Radius: 100})
+			addComponent(engine, exp, CalculateAABB(def.ShapeCircle, 100, 0, 0, 0))
 			addComponent(engine, exp, Faction{TeamID: team})
 			addComponent(engine, exp, ScheduledTask{TimeLeft: 0.020})
 			addComponent(engine, exp, DamageDealer{Amount: 200, SourceID: owner, DestroyOnHit: false})
@@ -75,6 +111,7 @@ func SpawnFlamewall(engine *ArchEngine, owner Entity, team uint8, x, y float32, 
 	addComponent(engine, e, Transform{X: spawnX, Y: spawnY, Angle: angle})
 	// Gán thêm Radius bù trừ để VisionTriggerSystem hoạt động với hình Chữ nhật
 	addComponent(engine, e, Collider{ShapeType: def.ShapeOBB, Width: 150, Height: 200, Radius: 125}) 
+	addComponent(engine, e, CalculateAABB(def.ShapeOBB, 125, 150, 200, angle))
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 4.0})
 	addComponent(engine, e, DamageDealer{
@@ -106,6 +143,7 @@ func SpawnToxicSpray(engine *ArchEngine, owner Entity, team uint8, x, y float32,
 		addComponent(engine, e, Transform{X: x, Y: y, Angle: finalAngle})
 		addComponent(engine, e, Velocity{Dx: vx, Dy: vy})
 		addComponent(engine, e, Collider{ShapeType: 1, Radius: 10})
+		addComponent(engine, e, CalculateAABB(def.ShapeCircle, 10, 0, 0, 0))
 		addComponent(engine, e, Faction{TeamID: team})
 		addComponent(engine, e, ScheduledTask{TimeLeft: 0.5})
 		addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 100, DestroyOnHit: true})
@@ -131,6 +169,7 @@ func SpawnToxicCloud(engine *ArchEngine, owner Entity, team uint8, x, y float32,
 	addComponent(engine, e, TagToxic{})
 	addComponent(engine, e, Transform{X: spawnX, Y: spawnY})
 	addComponent(engine, e, Collider{ShapeType: 1, Radius: 300})
+	addComponent(engine, e, CalculateAABB(def.ShapeCircle, 300, 0, 0, 0))
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 8.0})
 	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 50, DestroyOnHit: false, TickRate: 0.5})
@@ -160,6 +199,7 @@ func SpawnFlashFreeze(engine *ArchEngine, owner Entity, team uint8, x, y float32
 	
 	// PHẢI CÓ COLLIDER ĐỂ HỆ THỐNG VISION TÍNH ĐƯỢC TẦM NHÌN
 	addComponent(engine, e, Collider{ShapeType: 1, Radius: 250.0}) 
+	addComponent(engine, e, CalculateAABB(def.ShapeCircle, 250.0, 0, 0, 0))
 	
 	// --- LOGIC TẦM NHÌN: CẢNH BÁO ---
 	addComponent(engine, e, VisibilityMask{})
@@ -176,6 +216,7 @@ func SpawnFlashFreeze(engine *ArchEngine, owner Entity, team uint8, x, y float32
 			addComponent(engine, exp, TagIce{})
 			addComponent(engine, exp, Transform{X: x, Y: y})
 			addComponent(engine, exp, Collider{ShapeType: 1, Radius: 250.0})
+			addComponent(engine, exp, CalculateAABB(def.ShapeCircle, 250.0, 0, 0, 0))
 			addComponent(engine, exp, Faction{TeamID: team})
 			addComponent(engine, exp, ScheduledTask{TimeLeft: 0.05})
 			addComponent(engine, exp, DamageDealer{
@@ -200,6 +241,7 @@ func SpawnIceLance(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 	addComponent(engine, e, Transform{X: x, Y: y, Angle: angle})
 	addComponent(engine, e, Velocity{Dx: vx, Dy: vy})
 	addComponent(engine, e, Collider{ShapeType: 1, Radius: 15})
+	addComponent(engine, e, CalculateAABB(def.ShapeCircle, 15, 0, 0, 0))
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 1.0})
 	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 70, DestroyOnHit: false})
@@ -220,6 +262,7 @@ func SpawnIceLance(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 			trail := engine.CreateEntity()
 			addComponent(engine, trail, Transform{X: tx, Y: ty})
 			addComponent(engine, trail, Collider{ShapeType: 1, Radius: 15}) // Phải có Collider để tính tầm nhìn
+			addComponent(engine, trail, CalculateAABB(def.ShapeCircle, 15, 0, 0, 0))
 			addComponent(engine, trail, Faction{TeamID: team}) // Cho team mình để buff tốc
 			addComponent(engine, trail, DamageDealer{
 				Amount: 0, DestroyOnHit: false, TickRate: 0.2, SourceID: owner,
@@ -252,6 +295,7 @@ func SpawnWindShear(engine *ArchEngine, owner Entity, team uint8, x, y float32, 
 	addComponent(engine, e, Transform{X: x, Y: y, Angle: angle})
 	addComponent(engine, e, Velocity{Dx: vx, Dy: vy})
 	addComponent(engine, e, Collider{ShapeType: 1, Radius: 15})
+	addComponent(engine, e, CalculateAABB(def.ShapeCircle, 15, 0, 0, 0))
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 0.4})
 	addComponent(engine, e, Bounce{Remaining: 1})
@@ -278,6 +322,7 @@ func SpawnTornado(engine *ArchEngine, owner Entity, team uint8, x, y float32, an
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 6.0})
 	addComponent(engine, e, Collider{ShapeType: 1, Radius: 350}) // Bán kính hút gió
+	addComponent(engine, e, CalculateAABB(def.ShapeCircle, 350, 0, 0, 0))
 	addComponent(engine, e, PullForce{Force: 200.0})
 
 	// --- LOGIC TẦM NHÌN ---
@@ -306,6 +351,7 @@ func SpawnShockwave(engine *ArchEngine, owner Entity, team uint8, x, y float32, 
 	
 	// Lưu ý: ShapeOBB nhưng phải có Radius nội tiếp/ngoại tiếp để hệ thống Vision quét được
 	addComponent(engine, e, Collider{ShapeType: def.ShapeOBB, Width: 50, Height: 400, Radius: 200})
+	addComponent(engine, e, CalculateAABB(def.ShapeOBB, 200, 50, 400, angle))
 	
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, DamageDealer{SourceID: owner, Amount: 75, DestroyOnHit: false})
@@ -328,6 +374,7 @@ func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, aimX, aimY f
 	addComponent(engine, e, Faction{TeamID: team})
 	addComponent(engine, e, ScheduledTask{TimeLeft: 1.2})
 	addComponent(engine, e, Collider{ShapeType: 1, Radius: 180.0}) // Bắt buộc phải có để quét Vision
+	addComponent(engine, e, CalculateAABB(def.ShapeCircle, 180.0, 0, 0, 0))
 	
 	// --- LOGIC TẦM NHÌN CẢNH BÁO ---
 	addComponent(engine, e, VisibilityMask{})
@@ -343,6 +390,7 @@ func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, aimX, aimY f
 			hitbox := engine.CreateEntity()
 			addComponent(engine, hitbox, Transform{X: x, Y: y})
 			addComponent(engine, hitbox, Collider{ShapeType: def.ShapeCircle, Radius: 180.0})
+			addComponent(engine, hitbox, CalculateAABB(def.ShapeCircle, 180.0, 0, 0, 0))
 			addComponent(engine, hitbox, Faction{TeamID: team})
 			addComponent(engine, hitbox, TagArea{}) // Vùng sát thương tĩnh
 			addComponent(engine, hitbox, ScheduledTask{TimeLeft: 0.05}) // Tồn tại 1 nhịp để gây sát thương

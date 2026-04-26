@@ -207,5 +207,9 @@ type NetVisual struct{
 }
 type TagPlayer struct{}
 type SightRange  struct{
-    Radius float32
+    TemplateID int 
+}
+type BoundingBox struct {
+    HalfW float32
+    HalfH float32
 }

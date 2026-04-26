@@ -119,3 +119,43 @@ const (
 // 	ShapeTypeCircle = 1
 // 	ShapeTypeBox = 2
 // )
+type SpellData struct {
+	Speed   float32
+	Radius  float32
+	MaxTime float32
+}
+
+func GetSpellData(spell Spell) SpellData {
+	switch spell {
+	case SpellFireball:   return SpellData{Speed: 1200, Radius: 20, MaxTime: 0.45}
+	case SpellToxicSpray: return SpellData{Speed: 800,  Radius: 10, MaxTime: 0.50}
+	case SpellIceLance:   return SpellData{Speed: 500,  Radius: 15, MaxTime: 1.00}
+	case SpellWindShear:  return SpellData{Speed: 1500, Radius: 15, MaxTime: 0.40}
+	case SpellShockwave:  return SpellData{Speed: 750,  Radius: 0,  MaxTime: 1.00} // Radius = 0 vì dùng OBB
+	default:              return SpellData{Speed: 0,    Radius: 10, MaxTime: 0.0}
+	}
+}
+
+// 2. Dữ liệu cho VFX (Vùng hiệu ứng/Cảnh báo/Nổ)
+type VFXData struct {
+	Shape   VFXShape
+	Radius  float32 // Dùng cho hình tròn
+	W, H    float32 // Dùng cho hình chữ nhật
+	MaxTime float32 // Thời gian tồn tại tối đa (để vẽ Animation)
+}
+
+func GetVFXData(vfx VFXType) VFXData {
+	switch vfx {
+	case VFXFireExplosion:   return VFXData{Shape: VFXShapeCircle, Radius: 100, MaxTime: 0.5}
+	case VFXPoisonExplosion: return VFXData{Shape: VFXShapeCircle, Radius: 100, MaxTime: 0.5}
+	case VFXIceExplosion:    return VFXData{Shape: VFXShapeCircle, Radius: 250, MaxTime: 0.5}
+	case VFXToxicCloud:      return VFXData{Shape: VFXShapeCircle, Radius: 300, MaxTime: 8.0}
+	case VFXIceTrail:        return VFXData{Shape: VFXShapeCircle, Radius: 15,  MaxTime: 2.0}
+	case VFXIceWarning:      return VFXData{Shape: VFXShapeCircle, Radius: 250, MaxTime: 0.75}
+	case VFXTornado:         return VFXData{Shape: VFXShapeCircle, Radius: 350, MaxTime: 6.0}
+	case VFXBoulderWarning:  return VFXData{Shape: VFXShapeCircle, Radius: 180, MaxTime: 1.2}
+	case VFXBoulderCrash:    return VFXData{Shape: VFXShapeCircle, Radius: 180, MaxTime: 0.6}
+	case VFXFlamewall:       return VFXData{Shape: VFXShapeBox,    W: 150, H: 200, MaxTime: 4.0}
+	default:                 return VFXData{Shape: VFXShapeCircle, Radius: 50, MaxTime: 1.0}
+	}
+}

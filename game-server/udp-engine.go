@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -9,9 +10,9 @@ import (
 
 
 const (
-    BatchSize = 256
+    BatchSize = MaxPlayers
     PacketSize = 8192
-	SendBatchSize = 256
+	SendBatchSize = MaxPlayers
 )
 type Mmsghdr struct {
 	Hdr unix.Msghdr
@@ -29,6 +30,9 @@ type UdpEngine struct {
 	sendIovecs []unix.Iovec
 	sendBuffers [][]byte
 	sendCount int
+
+    sendDataBlock []byte // THÊM DẢI NHỚ LIỀN KỀ
+    recvDataBlock []byte
 }
 func NewUDPEngine(port int) (*UdpEngine, error) {
 	fd,err:= unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
@@ -36,6 +40,7 @@ func NewUDPEngine(port int) (*UdpEngine, error) {
 		return nil, err
 	}
 	unix.SetNonblock(fd,true)
+	unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, 4*1024*1024)
 	addr:= &unix.SockaddrInet4{Port: port}
 	copy(addr.Addr[:], []byte{0,0,0,0})
 	if err := unix.Bind(fd, addr); err != nil {
@@ -54,12 +59,17 @@ func NewUDPEngine(port int) (*UdpEngine, error) {
 		sendBuffers: make([][]byte, SendBatchSize),
 		sendCount: 0,
 	}
+	engine.recvDataBlock = make([]byte, BatchSize * PacketSize)
+    engine.sendDataBlock = make([]byte, SendBatchSize * PacketSize)
 	for i := 0; i < BatchSize;i++{
-		engine.recvBuffers[i] = make([]byte, PacketSize)
-		engine.recvIovecs[i] =unix.Iovec{
-			Base: (*byte) (&engine.recvBuffers[i][0]),
-			Len: PacketSize,
-		}
+		start := i * PacketSize
+        end := start + PacketSize
+        engine.recvBuffers[i] = engine.recvDataBlock[start:end]
+        
+        engine.recvIovecs[i] = unix.Iovec{
+            Base: &engine.recvDataBlock[start],
+            Len:  uint64(PacketSize),
+        }
 		engine.recvMsgs[i] = Mmsghdr{
 			Hdr: unix.Msghdr{
 				Name: (*byte)(unsafe.Pointer(&engine.recvAddrs[i])),
@@ -70,11 +80,16 @@ func NewUDPEngine(port int) (*UdpEngine, error) {
 		}
 	}
 	for i := 0; i < SendBatchSize;i++{
-		engine.sendBuffers[i] = make([]byte, PacketSize)
-		engine.sendIovecs[i] = unix.Iovec{
-			Base: &engine.sendBuffers[i][0],
-			Len: 0,
-		}
+
+		start := i * PacketSize
+        end := start + PacketSize
+        engine.sendBuffers[i] = engine.sendDataBlock[start:end]
+        
+        engine.sendIovecs[i] = unix.Iovec{
+            Base: &engine.sendDataBlock[start],
+            Len:  0,
+        }
+
 		engine.sendMsgs[i] = Mmsghdr{
 			Hdr: unix.Msghdr{
 				Iov: &engine.sendIovecs[i],
@@ -83,6 +98,7 @@ func NewUDPEngine(port int) (*UdpEngine, error) {
 			},
 		}
 	}
+
 	return engine, nil
 }
 func (e *UdpEngine) ReadBatch() (int, error) {
@@ -117,47 +133,68 @@ func (e *UdpEngine) ProcessPackets(n int ){
 		}
 	}
 }
-func(e *UdpEngine)QueueToSend(data []byte, desAddr *unix.RawSockaddrAny)bool{
-	if e.sendCount>=SendBatchSize{
-		return true
+func (e *UdpEngine) QueueToSend(data []byte, desAddr *unix.RawSockaddrAny) {
+	dataLen := uint64(len(data))
+	if e.sendCount >= SendBatchSize {
+		e.FlushSend()
 	}
-	idx:= e.sendCount
-	copy(e.sendBuffers[idx],data)
-	// //////fmt.println("copy ",len(data)," xuong xe cho hang")
+	
+	idx := e.sendCount
+	copy(e.sendBuffers[idx], data)
 	e.sendIovecs[idx].SetLen(len(data))
 	e.sendMsgs[idx].Hdr.Name = (*byte)(unsafe.Pointer(desAddr))
 	e.sendMsgs[idx].Hdr.Namelen = uint32(unsafe.Sizeof(unix.RawSockaddrAny{}))
 	e.sendCount++
-	return e.sendCount>=SendBatchSize
+
+	// --- THỐNG KÊ CHI TIẾT ---
+	atomic.AddUint64(&Metrics.TotalBytes, dataLen)
+	atomic.AddUint64(&Metrics.currentTickBytes, dataLen)
+	
+	// Phân loại kích thước gói
+	bucketIdx := 0
+	if dataLen <= 100 { bucketIdx = 0 } else 
+	if dataLen <= 500 { bucketIdx = 1 } else 
+	if dataLen <= 1000 { bucketIdx = 2 } else 
+	if dataLen <= 1200 { bucketIdx = 3 } else { bucketIdx = 4 }
+	atomic.AddUint64(&Metrics.PacketSizeBuckets[bucketIdx], 1)
 }
+
 func (e *UdpEngine) FlushSend() error {
 	if e.sendCount == 0 {
 		return nil
 	}
-
-	sent := 0
-	for sent < e.sendCount {
-        // DÙNG RawSyscall6 cho socket Non-blocking!
-		n, _, err := unix.RawSyscall6(
-			unix.SYS_SENDMMSG,
-			uintptr(e.fd),
-			uintptr(unsafe.Pointer(&e.sendMsgs[sent])), // Đẩy con trỏ tới gói chưa gửi
-			uintptr(e.sendCount - sent),
-			0, 0, 0,
-		)
-
-		if err != 0 {
-			if err == unix.EAGAIN || err == unix.EWOULDBLOCK {
-				// Mạng OS đang kẹt. Trong Game Server, ta có 2 cách:
-                // Cách 1: Vòng lặp chờ (Spin-wait) một chút rồi gửi lại (Nguy hiểm nếu kẹt lâu)
-                // Cách 2: Chấp nhận DROP (rớt) các gói tin còn lại của Batch này để không làm đứng Server.
-                // Tạm thời, tôi để Break (Chấp nhận rớt gói nếu quá tải mạng, udp mà!)
-                break 
-			}
-			return fmt.Errorf("Lỗi Sendmmsg: %v", err)
+	
+	// Theo dõi đỉnh băng thông trong 1 tick
+	currTick := atomic.SwapUint64(&Metrics.currentTickBytes, 0)
+	for {
+		max := atomic.LoadUint64(&Metrics.MaxBytesInTick)
+		if currTick <= max || atomic.CompareAndSwapUint64(&Metrics.MaxBytesInTick, max, currTick) {
+			break
 		}
-		
-		sent += int(n) // n là số gói tin đã đẩy thành công vào OS Buffer
+	}
+
+	atomic.AddUint64(&Metrics.CallCount, 1)
+	atomic.AddUint64(&Metrics.BatchDistribution[e.sendCount], 1)
+
+	n, _, err := unix.RawSyscall6(
+		unix.SYS_SENDMMSG,
+		uintptr(e.fd),
+		uintptr(unsafe.Pointer(&e.sendMsgs[0])),
+		uintptr(e.sendCount),
+		0, 0, 0,
+	)
+
+	if err != 0 {
+		if err == unix.EAGAIN || err == unix.EWOULDBLOCK {
+			atomic.AddUint64(&Metrics.DroppedPackets, uint64(e.sendCount))
+		}
+		e.sendCount = 0
+		return nil
+	}
+
+	atomic.AddUint64(&Metrics.TotalPackets, uint64(n))
+	if int(n) < e.sendCount {
+		atomic.AddUint64(&Metrics.DroppedPackets, uint64(e.sendCount-int(n)))
 	}
 
 	e.sendCount = 0

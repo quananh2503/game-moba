@@ -1,10 +1,22 @@
 package main
 
 import (
+	"fmt"
 	def "game/pkg"
 	"math"
 )
-
+var SinTable [360]float32
+var CosTable [360]float32
+func InitMathTables() {
+	for i := 0; i < 360; i++ {
+		// Chuyển Độ (Degree) sang Radian để tính toán gốc
+		rad := float64(i) * math.Pi / 180.0
+		// Tính sẵn và lưu dạng float32
+		SinTable[i] = float32(math.Sin(rad))
+		CosTable[i] = float32(math.Cos(rad))
+	}
+	fmt.Println("[System] Đã nạp xong Bảng tra cứu Sin/Cos (LUT).")
+}
 // ---------------------------------------------------------
 // TRỢ THỦ 1: TRÒN vs TRÒN
 // ---------------------------------------------------------
@@ -27,8 +39,10 @@ func checkAABBVsAABB(x1, y1, w1, h1, x2, y2, w2, h2 float32) bool {
 // TRỢ THỦ 3: TRÒN vs HỘP THẲNG (AABB)
 // ---------------------------------------------------------
 func checkCircleVsAABB(cx, cy, r float32, boxX, boxY, w, h float32) bool {
-	closestX := float32(math.Max(float64(boxX-w/2), math.Min(float64(cx), float64(boxX+w/2))))
-	closestY := float32(math.Max(float64(boxY-h/2), math.Min(float64(cy), float64(boxY+h/2))))
+	halfW := w * 0.5 // Nhân 0.5 luôn nhanh hơn chia 2 (phép nhân tốn 1 cycle, chia tốn ~10 cycles)
+    halfH := h * 0.5
+	closestX := max(boxX-halfW, min(cx, boxX+halfW))
+    closestY := max(boxY-halfH, min(cy, boxY+halfH))
 	dx := cx - closestX
 	dy := cy - closestY
 	// fmt.Printf("dx %f dy %f -%f <=%f \n",dx,dy,(dx*dx + dy*dy),r * r)
@@ -42,9 +56,9 @@ func checkCircleVsOBB(cx, cy, r float32, rectX, rectY, w, h float32, angleDeg ui
 	dx := cx - rectX
 	dy := cy - rectY
 
-	rad := -float64(angleDeg) * math.Pi / 180.0
-	cosA := float32(math.Cos(rad))
-	sinA := float32(math.Sin(rad))
+	safeAngle := (360 - (angleDeg % 360)) % 360
+	cosA := CosTable[safeAngle]
+	sinA := SinTable[safeAngle]
 
 	localX := dx*cosA - dy*sinA
 	localY := dx*sinA + dy*cosA
@@ -54,6 +68,7 @@ func checkCircleVsOBB(cx, cy, r float32, rectX, rectY, w, h float32, angleDeg ui
 
 	closestX := float32(math.Max(float64(-halfW), math.Min(float64(localX), float64(halfW))))
 	closestY := float32(math.Max(float64(-halfH), math.Min(float64(localY), float64(halfH))))
+	
 
 	distX := localX - closestX
 	distY := localY - closestY
@@ -123,9 +138,10 @@ func isPointInOBB(px, py float32, rectX, rectY, w, h float32, angleDeg uint16) b
     dx := px - rectX
     dy := py - rectY
 
-    rad := -float64(angleDeg) * math.Pi / 180.0
-    cosA := float32(math.Cos(rad))
-    sinA := float32(math.Sin(rad))
+	safeAngle := (360 - (angleDeg % 360)) % 360
+	cosA := CosTable[safeAngle]
+	sinA := SinTable[safeAngle]
+
 
     localX := dx*cosA - dy*sinA
     localY := dx*sinA + dy*cosA
@@ -138,9 +154,9 @@ func isPointInOBB(px, py float32, rectX, rectY, w, h float32, angleDeg uint16) b
 }
 func checkOBBVsAABB(obbX, obbY, obbW, obbH float32, obbAngle uint16, aabbX, aabbY, aabbW, aabbH float32) bool {
 	// 1. LẤY 4 GÓC CỦA OBB
-	rad := float64(obbAngle) * math.Pi / 180.0
-	cosA := float32(math.Cos(rad))
-	sinA := float32(math.Sin(rad))
+	safeAngle := obbAngle % 360
+	cosA := CosTable[safeAngle]
+	sinA := SinTable[safeAngle]
 	
 	halfW := obbW / 2.0
 	halfH := obbH / 2.0

@@ -4,55 +4,55 @@ import (
 	"math"
 )
 
-type ReliableEvent struct {
-	SeqID   uint16
-	Type    byte
-	Payload []byte
-	HasData bool
-}
-type ReliableReciever struct {
-	ExpectedSeq uint16
-	buffer      [256]ReliableEvent
-	ackQueue    []uint16
-}
+// type ReliableEvent struct {
+// 	SeqID   uint16
+// 	Type    byte
+// 	Payload []byte
+// 	HasData bool
+// }
+// type ReliableReciever struct {
+// 	ExpectedSeq uint16
+// 	buffer      [256]ReliableEvent
+// 	ackQueue    []uint16
+// }
 
-func NewReliableChannel() *ReliableReciever {
-	return &ReliableReciever{
-		ExpectedSeq: 1,
-		ackQueue:    make([]uint16, 0, 256),
-	}
-}
-func (r *ReliableReciever) RecieveEvent(seq uint16, evType byte, payload []byte) []ReliableEvent {
-	if seq < r.ExpectedSeq {
-		r.ackQueue = append(r.ackQueue, seq)
-		return nil
-	}
-	if seq-r.ExpectedSeq > 255 {
-		//////fmt.println("Cảnh báo: Rớt mạng quá nặng, gói tin bay mất quá nhiều!")
-		return nil
-	}
-	idx := seq&255
-	if !r.buffer[idx].HasData{
-		r.buffer[idx]=ReliableEvent{
-			SeqID: seq,
-			Type: evType,
-			Payload: payload,
-			HasData: true,
-		}
-	}
-	r.ackQueue=append(r.ackQueue, seq )
-	var readyToProcess []ReliableEvent
-	for {
-		idx := r.ExpectedSeq &255
-		if !r.buffer[idx].HasData{
-			break
-		}
-		readyToProcess=append(readyToProcess, r.buffer[idx])
-		r.buffer[idx].HasData=false
-		r.ExpectedSeq++
-	}
-	return readyToProcess
-}
+// func NewReliableChannel() *ReliableReciever {
+// 	return &ReliableReciever{
+// 		ExpectedSeq: 1,
+// 		ackQueue:    make([]uint16, 0, 256),
+// 	}
+// }
+// func (r *ReliableReciever) RecieveEvent(seq uint16, evType byte, payload []byte) []ReliableEvent {
+// 	if seq < r.ExpectedSeq {
+// 		r.ackQueue = append(r.ackQueue, seq)
+// 		return nil
+// 	}
+// 	if seq-r.ExpectedSeq > 255 {
+// 		//////fmt.println("Cảnh báo: Rớt mạng quá nặng, gói tin bay mất quá nhiều!")
+// 		return nil
+// 	}
+// 	idx := seq&255
+// 	if !r.buffer[idx].HasData{
+// 		r.buffer[idx]=ReliableEvent{
+// 			SeqID: seq,
+// 			Type: evType,
+// 			Payload: payload,
+// 			HasData: true,
+// 		}
+// 	}
+// 	r.ackQueue=append(r.ackQueue, seq )
+// 	var readyToProcess []ReliableEvent
+// 	for {
+// 		idx := r.ExpectedSeq &255
+// 		if !r.buffer[idx].HasData{
+// 			break
+// 		}
+// 		readyToProcess=append(readyToProcess, r.buffer[idx])
+// 		r.buffer[idx].HasData=false
+// 		r.ExpectedSeq++
+// 	}
+// 	return readyToProcess
+// }
 type PacketReader struct {
 	Buf    []byte
 	Offset int
@@ -130,3 +130,37 @@ func (w *PacketWriter) Bytes() []byte {
 func (w *PacketWriter) Reset() {
 	w.Buf = w.Buf[:0]
 }
+
+
+
+func SeqMoreRecent(s1,s2 uint16) bool{
+	return ((s1 > s2) && (s1 -s2 <= 32768)) || ((s1<s2) && (s2 - s1 > 32768))
+}
+
+type NetworkChannel struct{
+	HighestRecieved uint16 
+	RecievedPackets [65536]bool 
+}
+func NewNetworkChannel() *NetworkChannel{
+	return &NetworkChannel{
+		HighestRecieved: 0,
+	}
+}
+func ( c *NetworkChannel)OnPacketReceived(seq uint16){
+	c.RecievedPackets[seq]=true
+	if SeqMoreRecent(seq,c.HighestRecieved){
+		c.HighestRecieved=seq
+	}
+}
+func( c *NetworkChannel)GetAckData()(uint16,uint32){
+	highest := c.HighestRecieved
+	mask:=uint32(0)
+	for i:=uint16(0);i<32;i++{
+		id := highest-1-i
+		if c.RecievedPackets[id]{
+			mask|=(1<<i)
+		}
+	}
+	return c.HighestRecieved,mask
+}
+

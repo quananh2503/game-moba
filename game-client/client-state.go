@@ -12,41 +12,40 @@ import (
 const (
 	MapSize      = 4000.0
 	PlayerRadius = 25.0
-	TickRate     = 60 // 60 Khung hình / giây
+	TickRate     = 60
+	VisionRadius = 500.0 // Tầm nhìn chuẩn của Player
 )
 
-// --- GIỮ NGUYÊN TOÀN BỘ STRUCT VÀ API CỦA BẠN ---
-type ClientEntity struct { ID uint16; X, Y float32; HP uint16 }
-type Bullet struct { X, Y float32; Angle uint16 }
-type ClientWall struct { X, Y, W, H float32 }
-type ClientBush struct { X, Y, Radius float32 }
-type ClientProjectile struct {
-	SpellID def.Spell
-	X, Y    float32
-	Angle   uint16
-	Speed   float32
+// --- STRUCTS CƠ BẢN ---
+type ClientWall struct{ X, Y, W, H float32 }
+type ClientBush struct{ X, Y, Radius float32 }
+
+type ClientPlayer struct {
+	X, Y       float32
+	HP         uint16
+	StatusMask byte
 }
+
+type ClientProjectile struct {
+	SpellID  def.Spell
+	X, Y     float32
+	Angle    uint16
+	TimeLeft float32 // Dùng để chặn đạn nội suy lố
+}
+
 type ClientVFX struct {
 	Type     def.VFXType
-	Shape    def.VFXShape
 	X, Y     float32
-	Radius   float32
-	W, H     float32
 	Angle    uint16
 	TimeLeft float32
-	MaxTime  float32
 }
-type ClientAoE struct {
-	SpellID byte
-	X, Y    float32
-	Radius  float32
+
+type PlayerInput struct {
+	keys         uint8
+	angle        uint16
+	rangeToMouse uint16
 }
-type ClientPlayer struct {
-	X, Y             float32
-	TargetX, TargetY float32
-	HP               uint16
-	StatusMask       byte
-}
+
 type ClientGame struct {
 	netState    *GameState
 	MyID        uint32
@@ -54,15 +53,9 @@ type ClientGame struct {
 	input       PlayerInput
 	Walls       []ClientWall
 	Bushes      []ClientBush
-	Projectiles map[uint32]*ClientProjectile
-	AoEs        map[uint32]*ClientAoE
 	Players     map[uint32]*ClientPlayer
-	VFXs        []ClientVFX
-}
-type PlayerInput struct {
-	keys         uint8
-	angle        uint16
-	rangeToMouse uint16
+	Projectiles map[uint32]*ClientProjectile
+	VFXs        map[uint32]*ClientVFX // Xóa theo ID
 }
 
 // --- HÌNH ẢNH PRE-RENDER TỐI ƯU ---
@@ -72,17 +65,19 @@ var (
 	circleFilled     *ebiten.Image
 	circleStroke     *ebiten.Image
 	imgExplosionBase *ebiten.Image
+	
+	// Dành riêng cho Sương mù (Fog of War)
+	fogScreen  *ebiten.Image
+	visionHole *ebiten.Image
 )
 
-// Biến dùng chung để vẽ, tránh tạo rác RAM (Garbage Collection) mỗi frame
 var globalDrawOp ebiten.DrawImageOptions
-
 const BaseRadius = 100.0
 
 func init() {
 	whitePixel = ebiten.NewImage(1, 1)
 	whitePixel.Fill(color.White)
-	
+
 	bushImage = ebiten.NewImage(200, 200)
 	ebitenVector.FillCircle(bushImage, 100, 100, 100, color.RGBA{34, 100, 34, 200}, true)
 	ebitenVector.StrokeCircle(bushImage, 100, 100, 100, 4.0, color.RGBA{0, 80, 0, 255}, true)
@@ -95,6 +90,12 @@ func init() {
 
 	imgExplosionBase = ebiten.NewImage(int(BaseRadius*2), int(BaseRadius*2))
 	ebitenVector.FillCircle(imgExplosionBase, BaseRadius, BaseRadius, BaseRadius, color.White, true)
+
+	// --- KHỞI TẠO LAYER SƯƠNG MÙ ---
+	fogScreen = ebiten.NewImage(1280, 720)
+	// Tạo con dấu đục lỗ (Màu trắng tinh, cạnh mờ dần)
+	visionHole = ebiten.NewImage(int(VisionRadius*2), int(VisionRadius*2))
+	ebitenVector.FillCircle(visionHole, VisionRadius, VisionRadius, VisionRadius, color.White, true)
 }
 
 // --- HÀM VẼ CƠ BẢN TỐI ƯU GPU ---
@@ -127,32 +128,36 @@ func drawGPUStrokeCircle(screen *ebiten.Image, cx, cy, radius float32, clr color
 	screen.DrawImage(circleStroke, &globalDrawOp)
 }
 
+// ==========================================
+// VÒNG LẶP LOGIC CLIENT
+// ==========================================
 func (g *ClientGame) Update() error {
 	processNetworkEvents(g.netState, g)
 	g.HandleInput()
 	dt := float32(1.0 / 60.0)
 
-	// CẬP NHẬT TỌA ĐỘ ĐẠN (Nội suy)
-	for _, p := range g.Projectiles {
-		rad := float64(p.Angle) * math.Pi / 180.0
-		p.X += float32(math.Cos(rad)) * p.Speed * dt
-		p.Y += float32(math.Sin(rad)) * p.Speed * dt
-	}
-
-	// Lọc và xóa VFX hết hạn (In-place filter cực tối ưu)
-	n := 0
-	for i := range g.VFXs {
-		g.VFXs[i].TimeLeft -= dt
-		if g.VFXs[i].TimeLeft > 0 {
-			g.VFXs[n] = g.VFXs[i]
-			n++
+	// 1. Cập nhật nội suy đạn
+	for id, p := range g.Projectiles {
+		p.TimeLeft -= dt
+		if p.TimeLeft > 0 { // Còn sống thì bay
+			speed := def.GetSpellData(p.SpellID).Speed
+			rad := float64(p.Angle) * math.Pi / 180.0
+			p.X += float32(math.Cos(rad)) * speed * dt
+			p.Y += float32(math.Sin(rad)) * speed * dt
+		} else if p.TimeLeft <= -0.2 {
+			// Dự phòng: Lỡ mạng lag mất gói tin Xóa đạn, cho nó tự bay màu sau 0.2s
+			delete(g.Projectiles, id)
 		}
 	}
-	// Giải phóng tham chiếu thừa
-	for i := n; i < len(g.VFXs); i++ {
-		g.VFXs[i] = ClientVFX{} 
+
+	// 2. Cập nhật VFX
+	for id, v := range g.VFXs {
+		v.TimeLeft -= dt
+		// An toàn: Xóa rác đồ họa lỡ Server quên gửi Event (Lag mạng)
+		if v.TimeLeft <= -0.5 {
+			delete(g.VFXs, id)
+		}
 	}
-	g.VFXs = g.VFXs[:n]
 
 	sendAckEvents(g.netState, g)
 	return nil
@@ -164,7 +169,6 @@ func (g *ClientGame) HandleInput() {
 	if ebiten.IsKeyPressed(ebiten.KeyA) { keys |= def.InputA }
 	if ebiten.IsKeyPressed(ebiten.KeyD) { keys |= def.InputD }
 	if ebiten.IsKeyPressed(ebiten.KeyS) { keys |= def.InputS }
-	
 	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) { keys |= def.InputLeftClick }
 	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight) { keys |= def.InputRightClick }
 	if ebiten.IsKeyPressed(ebiten.KeySpace) { keys |= def.InputSpace }
@@ -191,56 +195,43 @@ func (g *ClientGame) HandleInput() {
 	}
 }
 
+// ==========================================
+// VÒNG LẶP VẼ ĐỒ HỌA
+// ==========================================
 func (g *ClientGame) Draw(screen *ebiten.Image) {
 	screen.Fill(color.RGBA{44, 47, 51, 255}) // Nền đất
 
-	// 1. TÍNH TOÁN CAMERA & CULLING
 	var camX, camY float32 = 0, 0
 	if me, ok := g.Players[uint32(g.MyID)]; ok {
-		camX = me.X - 640.0
-		camY = me.Y - 360.0
+		camX = me.X - 1280.0/2.0
+		camY = me.Y - 720.0/2.0
 	}
 	
-	// Khung Culling (Thêm 200 padding để không bị giật popup khi vừa chớm mép màn hình)
 	padding := float32(200.0)
-	camLeft   := camX - padding
-	camRight  := camX + 1280.0 + padding
-	camTop    := camY - padding
-	camBottom := camY + 720.0 + padding
+	camLeft, camRight := camX-padding, camX+1280.0+padding
+	camTop, camBottom := camY-padding, camY+720.0+padding
 
-	// RÌA & LƯỚI BẢN ĐỒ
-	drawGPURect(screen, 0-camX, 0-camY, MapSize, 5, color.Black)           
-	drawGPURect(screen, 0-camX, MapSize-camY, MapSize, 5, color.Black)     
-	drawGPURect(screen, 0-camX, 0-camY, 5, MapSize, color.Black)           
-	drawGPURect(screen, MapSize-camX, 0-camY, 5, MapSize+5, color.Black)   
+	// 1. RÌA & LƯỚI BẢN ĐỒ
+	drawGPURect(screen, 0-camX, 0-camY, MapSize, 5, color.Black)
+	drawGPURect(screen, 0-camX, MapSize-camY, MapSize, 5, color.Black)
+	drawGPURect(screen, 0-camX, 0-camY, 5, MapSize, color.Black)
+	drawGPURect(screen, MapSize-camX, 0-camY, 5, MapSize+5, color.Black)
 
-	for i := float32(0); i <= MapSize; i += 200 {
-		drawGPURect(screen, i-camX, 0-camY, 2, MapSize, color.RGBA{255, 255, 255, 15}) // Lưới sáng hơn tí
+	for i := float32(0); i <= MapSize; i += 50 {
+		drawGPURect(screen, i-camX, 0-camY, 2, MapSize, color.RGBA{255, 255, 255, 15})
 		drawGPURect(screen, 0-camX, i-camY, MapSize, 2, color.RGBA{255, 255, 255, 15})
 	}
 
-	// 2. VẼ TƯỜNG
+	// 2. VẼ TƯỜNG VÀ BỤI CỎ
 	for _, w := range g.Walls {
-		if w.X+w.W/2 < camLeft || w.X-w.W/2 > camRight || w.Y+w.H/2 < camTop || w.Y-w.H/2 > camBottom {
-			continue
-		}
-		drawX := w.X - w.W/2 - camX
-		drawY := w.Y - w.H/2 - camY
-		
-		drawGPURect(screen, drawX-5, drawY+w.H, w.W+10, 15, color.RGBA{0, 0, 0, 80}) // Bóng đổ 3D mượt hơn
-		drawGPURect(screen, drawX, drawY, w.W, w.H, color.RGBA{90, 95, 100, 255}) // Thân tường
-		// Viền
-		drawGPURect(screen, drawX, drawY, w.W, 2, color.Black)
-		drawGPURect(screen, drawX, drawY+w.H, w.W, 2, color.Black)
-		drawGPURect(screen, drawX, drawY, 2, w.H, color.Black)
-		drawGPURect(screen, drawX+w.W, drawY, 2, w.H, color.Black)
+		if w.X+w.W/2 < camLeft || w.X-w.W/2 > camRight || w.Y+w.H/2 < camTop || w.Y-w.H/2 > camBottom { continue }
+		drawX, drawY := w.X-w.W/2-camX, w.Y-w.H/2-camY
+		drawGPURect(screen, drawX-5, drawY+w.H, w.W+10, 15, color.RGBA{0, 0, 0, 80})
+		drawGPURect(screen, drawX, drawY, w.W, w.H, color.RGBA{90, 95, 100, 255})
 	}
 
-	// 3. VẼ BỤI CỎ
 	for _, b := range g.Bushes {
-		if b.X+b.Radius < camLeft || b.X-b.Radius > camRight || b.Y+b.Radius < camTop || b.Y-b.Radius > camBottom {
-			continue
-		}
+		if b.X+b.Radius < camLeft || b.X-b.Radius > camRight || b.Y+b.Radius < camTop || b.Y-b.Radius > camBottom { continue }
 		op := &ebiten.DrawImageOptions{}
 		scale := float64(b.Radius / 100.0) 
 		op.GeoM.Scale(scale, scale)
@@ -248,13 +239,10 @@ func (g *ClientGame) Draw(screen *ebiten.Image) {
 		screen.DrawImage(bushImage, op)
 	}
 
-	// 4. VẼ ĐẠN BAY
+	// 3. VẼ ĐẠN
 	for _, p := range g.Projectiles {
-		if p.X < camLeft || p.X > camRight || p.Y < camTop || p.Y > camBottom {
-			continue
-		}
-		drawX := p.X - camX
-		drawY := p.Y - camY
+		if p.X < camLeft || p.X > camRight || p.Y < camTop || p.Y > camBottom { continue }
+		drawX, drawY := p.X-camX, p.Y-camY
 
 		if p.SpellID == def.SpellWindShear {
 			DrawWindProjectile(screen, drawX, drawY, p.Angle)
@@ -266,95 +254,98 @@ func (g *ClientGame) Draw(screen *ebiten.Image) {
 		}
 
 		c := color.RGBA{255, 100, 0, 255} 
-		if p.SpellID == def.SpellToxicSpray {
-			c = color.RGBA{150, 255, 100, 255}
-		} else if p.SpellID == def.SpellIceLance {
-			c = color.RGBA{100, 220, 255, 255}
-		}
+		if p.SpellID == def.SpellToxicSpray { c = color.RGBA{150, 255, 100, 255} } else
+		 if p.SpellID == def.SpellIceLance { c = color.RGBA{100, 220, 255, 255} }
 		drawGPUCircle(screen, drawX, drawY, 12, c)
-		drawGPUCircle(screen, drawX, drawY, 6, color.White) // Lõi đạn sáng hơn
+		drawGPUCircle(screen, drawX, drawY, 6, color.White)
 	}
 
-	// 5. VẼ VFX (Đã áp dụng culling)
+	// 4. VẼ VFX (Sử dụng Data Dictionary)
 	for _, v := range g.VFXs {
-		if v.X < camLeft-200 || v.X > camRight+200 || v.Y < camTop-200 || v.Y > camBottom+200 {
-			continue // Mở rộng vùng culling cho VFX vì nó to
-		}
-		drawX := v.X - camX
-		drawY := v.Y - camY
+		if v.X < camLeft-300 || v.X > camRight+300 || v.Y < camTop-300 || v.Y > camBottom+300 { continue }
+		drawX, drawY := v.X-camX, v.Y-camY
+		
+		vfxData := def.GetVFXData(v.Type) // Lấy thông số từ điển chung
 
-		if v.Shape == def.VFXShapeCircle {
+		if vfxData.Shape == def.VFXShapeCircle {
 			switch v.Type {
-			case def.VFXToxicCloud:
-				DrawToxicCloud(screen, drawX, drawY, v.Radius, v.TimeLeft, v.MaxTime)
-			case def.VFXIceTrail:
-				DrawIceTrail(screen, drawX, drawY, v.Radius, v.TimeLeft, v.MaxTime)
-			case def.VFXIceWarning:
-				DrawWarningArea(screen, drawX, drawY, v.Radius, v.TimeLeft, v.MaxTime, 0.4, 0.8, 1.0) // Băng (Xanh lam)
-			case def.VFXBoulderWarning:
-				DrawWarningArea(screen, drawX, drawY, v.Radius, v.TimeLeft, v.MaxTime, 0.8, 0.4, 0.1) // Đất (Cam/Nâu)
-			case def.VFXTornado:
-				DrawTornado(screen, drawX, drawY, v.Radius, v.TimeLeft, v.MaxTime)
-			default:
-				DrawExplosionSprite(screen, drawX, drawY, v.Radius, v.Type, v.TimeLeft, v.MaxTime)
+			case def.VFXToxicCloud:     DrawToxicCloud(screen, drawX, drawY, vfxData.Radius, v.TimeLeft, vfxData.MaxTime)
+			case def.VFXIceTrail:       DrawIceTrail(screen, drawX, drawY, vfxData.Radius, v.TimeLeft, vfxData.MaxTime)
+			case def.VFXIceWarning:     DrawWarningArea(screen, drawX, drawY, vfxData.Radius, v.TimeLeft, vfxData.MaxTime, 0.4, 0.8, 1.0)
+			case def.VFXBoulderWarning: DrawWarningArea(screen, drawX, drawY, vfxData.Radius, v.TimeLeft, vfxData.MaxTime, 0.8, 0.4, 0.1)
+			case def.VFXTornado:        DrawTornado(screen, drawX, drawY, vfxData.Radius, v.TimeLeft, vfxData.MaxTime)
+			default:                    DrawExplosionSprite(screen, drawX, drawY, vfxData.Radius, v.Type, v.TimeLeft, vfxData.MaxTime)
 			}
-		} else if v.Shape == def.VFXShapeBox {
-			DrawFlamewallVFX(screen, drawX, drawY, v.W, v.H, v.Angle, v.TimeLeft, v.MaxTime)
+		} else if vfxData.Shape == def.VFXShapeBox {
+			DrawFlamewallVFX(screen, drawX, drawY, vfxData.W, vfxData.H, v.Angle, v.TimeLeft, vfxData.MaxTime)
 		}
 	}
 
-	// 6. VẼ NGƯỜI CHƠI
+	// 5. VẼ NGƯỜI CHƠI
 	for id, p := range g.Players {
-		if p.X < camLeft || p.X > camRight || p.Y < camTop || p.Y > camBottom {
-			continue
-		}
-		col := color.RGBA{231, 76, 60, 255} // Địch màu đỏ (Alizarin)
-		if id == g.MyID {
-			col = color.RGBA{52, 152, 219, 255} // Mình màu xanh (Peter River)
-		}
-		drawX := p.X - camX
-		drawY := p.Y - camY
-
-		// Bóng dưới chân (Mềm mại hơn)
-		drawGPURect(screen, drawX-15, drawY+18, 30, 8, color.RGBA{0, 0, 0, 100})
+		if p.X < camLeft || p.X > camRight || p.Y < camTop || p.Y > camBottom { continue }
 		
-		// Thân
+		col := color.RGBA{231, 76, 60, 255} // Địch màu đỏ
+		if id == g.MyID {
+			col = color.RGBA{25, 152, 219, 255} // Mình màu xanh
+		}
+		
+		drawX, drawY := p.X-camX, p.Y-camY
+		drawGPURect(screen, drawX-15, drawY+18, 30, 8, color.RGBA{0, 0, 0, 100}) // Bóng
 		drawGPUCircle(screen, drawX, drawY, PlayerRadius, col)
 		drawGPUStrokeCircle(screen, drawX, drawY, PlayerRadius, color.RGBA{0, 0, 0, 150})
 		
-		// Thanh máu (Hiệu ứng viền đẹp hơn)
+		// Thanh máu
 		hpWidth := float32(p.HP) / 3000.0 * 50.0
-		drawGPURect(screen, drawX-26, drawY-41, 52, 8, color.RGBA{0, 0, 0, 200}) // Nền đen
-		
-		hpColor := color.RGBA{46, 204, 113, 255} // Xanh lá
-		if p.HP < 1500 { hpColor = color.RGBA{241, 196, 15, 255} } // Vàng
-		if p.HP < 500 { hpColor = color.RGBA{231, 76, 60, 255} } // Đỏ
-		drawGPURect(screen, drawX-25, drawY-40, hpWidth, 6, hpColor) // Lõi máu
+		drawGPURect(screen, drawX-26, drawY-41, 52, 8, color.RGBA{0, 0, 0, 200})
+		hpColor := color.RGBA{46, 204, 113, 255}
+		if p.HP < 1500 { hpColor = color.RGBA{241, 196, 15, 255} }
+		if p.HP < 500 { hpColor = color.RGBA{231, 76, 60, 255} }
+		drawGPURect(screen, drawX-25, drawY-40, hpWidth, 6, hpColor)
 	}
+
+	// 6. VẼ SƯƠNG MÙ (FOG OF WAR) - CHE MÀN HÌNH LẠI
+	// g.DrawFogOfWar(screen)
+}
+
+// Hàm vẽ Sương mù cực đẹp
+func (g *ClientGame) DrawFogOfWar(screen *ebiten.Image) {
+	// Xóa sạch hình sương mù cũ, đổ màu đen nhạt bao phủ
+	fogScreen.Clear()
+	fogScreen.Fill(color.RGBA{10, 15, 20, 230}) // Đen xanh xám (Rất điện ảnh)
+
+	// Đục lỗ sáng tại vị trí mình
+	if _, ok := g.Players[uint32(g.MyID)]; ok {
+		op := &ebiten.DrawImageOptions{}
+		
+		// BlendDestinationOut = Xóa pixel ở đâu có màu trắng chồng lên
+		op.Blend = ebiten.BlendDestinationOut 
+		
+		// Đặt tâm vùng sáng giữa màn hình (vì Camera follow người chơi)
+		op.GeoM.Translate(float64(1280.0/2.0 - VisionRadius), float64(720.0/2.0 - VisionRadius))
+		
+		fogScreen.DrawImage(visionHole, op)
+	}
+
+	// Vẽ tấm sương mù đục lỗ đè lên màn hình thật
+	screen.DrawImage(fogScreen, nil)
 }
 
 // =====================================================================
-// HÀM HIỆU ỨNG RIÊNG CHO HỆ ĐẤT (CẢI TIẾN)
+// CÁC HÀM HIỆU ỨNG (Giữ nguyên như cũ, vì đã chuẩn rồi)
 // =====================================================================
-
-// Đạn đất (Shockwave): Vẽ xếp lớp 3D thành khối đá/vết nứt
 func DrawEarthShockwave(screen *ebiten.Image, x, y float32, angle uint16) {
 	op := &ebiten.DrawImageOptions{}
 	rad := float64(angle) * math.Pi / 180.0
-
-	// Kích thước thật của viên đá (Ví dụ: 100x400)
-	// Lưu ý: pixel trắng có size 1x1, nên Scale trực tiếp bằng W, H
 	width, height := float64(80.0), float64(300.0) 
 
-	// Lớp 1: Bóng đổ / Viền ngoài (Đen/Nâu thẫm)
 	op.GeoM.Scale(width+6, height+6)
 	op.GeoM.Translate(-(width+6)/2, -(height+6)/2)
 	op.GeoM.Rotate(rad)
 	op.GeoM.Translate(float64(x), float64(y))
-	op.ColorScale.Scale(0.2, 0.1, 0.05, 0.8) // Nâu rất tối
+	op.ColorScale.Scale(0.2, 0.1, 0.05, 0.8)
 	screen.DrawImage(whitePixel, op)
 
-	// Lớp 2: Thân đá chính (Nâu sần sùi)
 	op.GeoM.Reset()
 	op.ColorScale.Reset()
 	op.GeoM.Scale(width, height)
@@ -364,10 +355,9 @@ func DrawEarthShockwave(screen *ebiten.Image, x, y float32, angle uint16) {
 	op.ColorScale.Scale(0.55, 0.27, 0.07, 1.0)
 	screen.DrawImage(whitePixel, op)
 
-	// Lớp 3: Vân nứt sáng trên đá (Nâu sáng / Cam nhạt)
 	op.GeoM.Reset()
 	op.ColorScale.Reset()
-	op.GeoM.Scale(width*0.4, height*0.8) // Nhỏ hơn nằm giữa
+	op.GeoM.Scale(width*0.4, height*0.8)
 	op.GeoM.Translate(-width*0.2, -height*0.4)
 	op.GeoM.Rotate(rad)
 	op.GeoM.Translate(float64(x), float64(y))
@@ -375,19 +365,16 @@ func DrawEarthShockwave(screen *ebiten.Image, x, y float32, angle uint16) {
 	screen.DrawImage(whitePixel, op)
 }
 
-// Cảnh báo đa năng (Gộp chung Băng và Đất)
 func DrawWarningArea(screen *ebiten.Image, x, y, radius float32, timeLeft, maxTime float32, r, g, b float32) {
 	progress := 1.0 - (timeLeft / maxTime)
 	scale := float64(radius / BaseRadius)
 	
-	// Viền cố định
 	opStroke := &ebiten.DrawImageOptions{}
 	opStroke.GeoM.Scale(scale, scale)
 	opStroke.GeoM.Translate(float64(x-radius), float64(y-radius))
 	opStroke.ColorScale.Scale(r, g, b, 0.6)
 	screen.DrawImage(circleStroke, opStroke)
 
-	// Lõi đang to dần lên
 	coreRad := radius * float32(progress)
 	if coreRad <= 0 { return }
 	
@@ -400,10 +387,6 @@ func DrawWarningArea(screen *ebiten.Image, x, y, radius float32, timeLeft, maxTi
 	opCore.ColorScale.Scale(r, g, b, alpha)
 	screen.DrawImage(circleFilled, opCore)
 }
-
-// =====================================================================
-// CÁC HÀM HIỆU ỨNG KHÁC (Được dọn dẹp sạch sẽ)
-// =====================================================================
 
 func DrawToxicCloud(screen *ebiten.Image, x, y, radius float32, timeLeft, maxTime float32) {
 	progress := 1.0 - (timeLeft / maxTime)
@@ -471,32 +454,34 @@ func DrawExplosionSprite(screen *ebiten.Image, x, y float32, radius float32, vfx
 	op.GeoM.Translate(float64(x), float64(y))
 	screen.DrawImage(imgExplosionBase, op)
 }
-
 func DrawIceTrail(screen *ebiten.Image, x, y, radius float32, timeLeft, maxTime float32) {
-	progress := 1.0 - (timeLeft / maxTime)
-	var alpha float32
-	if progress < 0.1 { alpha = progress / 0.1 } else if timeLeft < 1.0 { alpha = timeLeft / 1.0 } else { alpha = 1.0 }
+	// Tránh chia cho 0 lỡ maxTime bị lỗi
+	if maxTime <= 0 { maxTime = 2.0 }
+	
+	// Alpha mặc định là 1.0 (Hiện rõ 100%)
+	alpha := float32(1.0)
+	
+	// Chỉ làm mờ từ từ đi trong 0.5 giây cuối cùng trước khi biến mất
+	if timeLeft < 0.5 {
+		alpha = timeLeft / 0.5
+	}
 
+	// Lõi băng (Xanh lam nhạt)
 	opBase := &ebiten.DrawImageOptions{}
 	scale := float64(radius / BaseRadius)
 	opBase.GeoM.Scale(scale, scale)
 	opBase.GeoM.Translate(float64(x-radius), float64(y-radius))
-	opBase.ColorScale.Scale(0.4, 0.8, 1.0, alpha*0.4) 
+	opBase.ColorScale.Scale(0.4, 0.8, 1.0, alpha*0.6) // Tăng độ sáng lên 0.6
 	screen.DrawImage(circleFilled, opBase)
 
+	// Lõi tâm (Sáng rực)
 	opCore := &ebiten.DrawImageOptions{}
-	coreScale := scale * 0.6 
-	coreRad := radius * 0.6
+	coreScale := scale * 0.5 
+	coreRad := radius * 0.5
 	opCore.GeoM.Scale(coreScale, coreScale)
 	opCore.GeoM.Translate(float64(x-coreRad), float64(y-coreRad))
-	opCore.ColorScale.Scale(0.8, 0.95, 1.0, alpha*0.8)
+	opCore.ColorScale.Scale(0.8, 0.95, 1.0, alpha)
 	screen.DrawImage(circleFilled, opCore)
-
-	opStroke := &ebiten.DrawImageOptions{}
-	opStroke.GeoM.Scale(scale, scale)
-	opStroke.GeoM.Translate(float64(x-radius), float64(y-radius))
-	opStroke.ColorScale.Scale(1.0, 1.0, 1.0, alpha*0.5)
-	screen.DrawImage(circleStroke, opStroke)
 }
 
 func DrawWindProjectile(screen *ebiten.Image, x, y float32, angle uint16) {

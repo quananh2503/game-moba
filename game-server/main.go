@@ -12,7 +12,7 @@ import (
 
 type Server struct{
 	netIO * NetworkIO
-	inputs *[200]atomic.Uint64
+	inputs *[MaxPlayers]atomic.Uint64
 	sessions *SessionManager
 	world *World
 	state *MatchState
@@ -30,7 +30,7 @@ type MapNetEntity struct{
 func NewServer(udpEngine *UdpEngine) *Server {
 	// Tạo các thùng Data và Engine
 	sessions := NewSessionManager()
-	inputs := [200]atomic.Uint64{}
+	inputs := [MaxPlayers]atomic.Uint64{}
 
 	return &Server{
 		sessions: sessions,
@@ -38,21 +38,23 @@ func NewServer(udpEngine *UdpEngine) *Server {
 		world:    NewWord(),
 		state:    &MatchState{ /*...khởi tạo...*/ },
 		inputs:   &inputs,
-		pendingId: make([]uint16, 0,256),
+		pendingId: make([]uint16, 0,MaxPlayers),
 		packetBuffer: &PacketBuffer{
 			Packets: make([]RawPacket, 0, 1024),
 		},
 	}
 }
 func( s *Server)StartLoop(){
+	InitVisionTemplates()
+	InitMathTables()
 	ticker := time.NewTicker(time.Second / TickRate)
 	dt := float32(0.016)
 	outbox := NewNetworkOutbox() // Tái sử dụng mỗi tick
 
-	SpawnMapObjects(s.world.Engine)
-	s.CacheMapData()
-	delsEntities :=make([]Entity,0,256)
-	acceptEntities:=make([]MapNetEntity,0,256)
+	// SpawnMapObjects(s.world.Engine)
+	// s.CacheMapData()
+	delsEntities :=make([]Entity,0,MaxPlayers)
+	acceptEntities:=make([]MapNetEntity,0,MaxPlayers)
 
 	var totalWorkTime time.Duration
 	var maxTickTime time.Duration
@@ -77,9 +79,9 @@ func( s *Server)StartLoop(){
 		s.sessions.SyncNetEntity(&acceptEntities,s.mapDataCache)
 	
 		s.world.Tick(dt, s.inputs, outbox)
-		s.sessions.FlushNetworkOutbox(outbox)
-		
-		s.netIO.BroadcastState(s.world.Engine, s.state,&s.sessions.clients,outbox)
+		s.sessions.FlushNetworkOutbox(s.sessions.clientSOA,outbox)
+		// a := s.sessions.clients
+		s.netIO.BroadcastState( s.state,s.sessions.clientSOA,outbox)
 		outbox.Reset()
 
 		elapsed := time.Since(start)
@@ -115,7 +117,14 @@ func( s *Server)StartLoop(){
 
 	}
 }
+func StartHTTPServer(mapData []byte) {
+	http.HandleFunc("/join", func(w http.ResponseWriter, r *http.Request) {
+		w.Write(mapData) 
+	})
 
+	fmt.Println("HTTP Server mở tại cổng 8080 để tải Map...")
+	http.ListenAndServe(":8080", nil)
+}
 func main() {
 	go func() {
 		//fmt.println("🔍 Hệ thống PPROF đang chạy tại http://localhost:6060/debug/pprof/")
@@ -132,6 +141,8 @@ func main() {
 	}
 	// 2. Khởi tạo Bộ não Game
 	server := NewServer(engine)
+	SpawnMapObjects(server.world.Engine)
+	server.CacheMapData()
 
 	//////fmt.println("Server UDP đang chạy tại port 9000...")
 
@@ -147,6 +158,9 @@ func main() {
 		panic(err)
 	}
 	go server.StartLoop()
+	go StartHTTPServer(server.mapDataCache)
+	// StartNetworkReporter()
+	
 	//////fmt.println("🔥 MOBA Server đã sẵn sàng tại port 9000 (Epoll Optimized)...")
 
 	events := make([] unix.EpollEvent,1)

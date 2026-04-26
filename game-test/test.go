@@ -2,201 +2,282 @@ package main
 
 import (
 	"fmt"
-	def "game/pkg" // Đảm bảo bạn đã import package chứa các hằng số Input
+	def "game/pkg" // Cập nhật đường dẫn package của bạn
+	"io"
+	"math"
 	"math/rand"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
 
 const (
 	ServerAddr = "127.0.0.1:9000"
-	NumBots    = 100 
+	NumBots    = 497
 	MapCenter  = 2000.0
-	Boundary   = 2000.0 // Bot sẽ quay đầu nếu cách tâm quá 600 đơn vị
+	Boundary   = 1800.0
 )
 
-// Cấu trúc để lưu trạng thái của mỗi Bot
+// ==================================================
+// HỆ THỐNG MẠNG CỦA BOT (ZERO-ALLOCATION ACK)
+// ==================================================
+func SeqMoreRecent(s1, s2 uint16) bool {
+	return ((s1 > s2) && (s1-s2 <= 32768)) || ((s1 < s2) && (s2-s1 > 32768))
+}
+
+type NetworkChannel struct {
+	mu              sync.Mutex
+	HighestReceived uint16
+	ReceivedPackets [65536]bool
+}
+
+func NewNetworkChannel() *NetworkChannel {
+	return &NetworkChannel{}
+}
+
+func (nc *NetworkChannel) OnPacketReceived(seq uint16) bool {
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+
+	if nc.ReceivedPackets[seq] {
+		return false // Đã nhận rồi (Lặp gói)
+	}
+
+	nc.ReceivedPackets[seq] = true
+	if SeqMoreRecent(seq, nc.HighestReceived) {
+		nc.HighestReceived = seq
+	}
+	return true
+}
+
+func (nc *NetworkChannel) GetAckData() (uint16, uint32) {
+	nc.mu.Lock()
+	defer nc.mu.Unlock()
+
+	highest := nc.HighestReceived
+	var bitfield uint32 = 0
+	for i := uint16(0); i < 32; i++ {
+		seqToCheck := highest - 1 - i
+		if nc.ReceivedPackets[seqToCheck] {
+			bitfield |= (1 << i)
+		}
+	}
+	return highest, bitfield
+}
+
+// ==================================================
+// BOT LOGIC
+// ==================================================
 type BotState struct {
-	MyID uint32
-	X, Y float32
-	mu   sync.RWMutex
+	MyID           uint32
+	X, Y           float32
+	mu             sync.RWMutex
+	CurrentKeys    uint8
+	ActionTimeLeft float32
 }
 
 func main() {
-	fmt.Printf("🚀 Khởi động %d Headless Bots (Có logic quay về tâm)...\n", NumBots)
+	fmt.Printf("🚀 Khởi động %d Headless Bots (Bitfield ACK)...\n", NumBots)
 	serverIP, _ := net.ResolveUDPAddr("udp", ServerAddr)
 	var wg sync.WaitGroup
 
 	for i := 0; i < NumBots; i++ {
 		wg.Add(1)
 		go runBot(i, serverIP, &wg)
-		time.Sleep(10 * time.Millisecond) 
+		time.Sleep(5 * time.Millisecond) // Tránh ddos cổng HTTP cục bộ
 	}
 	wg.Wait()
 }
 
 func runBot(botID int, serverIP *net.UDPAddr, wg *sync.WaitGroup) {
 	defer wg.Done()
+
+	// 1. GIAI ĐOẠN HTTP (Mô phỏng lấy Map)
+	resp, err := http.Get("http://127.0.0.1:8080/join")
+	if err == nil {
+		io.ReadAll(resp.Body) // Đọc xong bỏ đi, tạo áp lực cho Server
+		resp.Body.Close()
+	}
+
+	// 2. GIAI ĐOẠN UDP
 	conn, err := net.DialUDP("udp", nil, serverIP)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	defer conn.Close()
 
 	seed := time.Now().UnixNano() + int64(botID)
 	localRand := rand.New(rand.NewSource(seed))
-	
+
 	state := &BotState{}
-	receiver := NewReliableChannel()
+	receiver := NewNetworkChannel()
 	readBuf := make([]byte, 8196)
 	writeBuf := make([]byte, 2048)
 
-	// Gửi gói tin đầu tiên để Server nhận diện
-	conn.Write([]byte{0, 0, 0, 0, 0})
+	// Gửi gói Handshake đầu tiên
+	conn.Write([]byte{0, 0, 0})
 
-	// LUỒNG NHẬN DATA
+	// Luồng Đọc UDP
 	go func() {
 		for {
 			n, _, err := conn.ReadFromUDP(readBuf)
 			if err != nil { return }
 			if n > 0 {
-				extractACKs(readBuf[:n], receiver, state)
+				parseServerPacket(readBuf[:n], receiver, state)
 			}
 		}
 	}()
 
+	// Luồng Gửi UDP (Tick Rate)
 	ticker := time.NewTicker(16 * time.Millisecond)
 	defer ticker.Stop()
+	dt := float32(16.0 / 1000.0)
+
+	validMoves := []uint8{
+		0, uint8(def.InputW), uint8(def.InputS), uint8(def.InputA), uint8(def.InputD),
+		uint8(def.InputW | def.InputA), uint8(def.InputW | def.InputD),
+		uint8(def.InputS | def.InputA), uint8(def.InputS | def.InputD),
+	}
 
 	for range ticker.C {
-		state.mu.RLock()
+		state.mu.Lock()
 		curX, curY := state.X, state.Y
-		state.mu.RUnlock()
+		state.ActionTimeLeft -= dt
 
-		var fakeKeys uint8
+		distX := curX - MapCenter
+		distY := curY - MapCenter
+		isOutOfBounds := distX > Boundary || distX < -Boundary || distY > Boundary || distY < -Boundary
 
-		// LOGIC DI CHUYỂN:
-		// Nếu chưa có tọa độ (mới vào game), di chuyển ngẫu nhiên hoàn toàn
-		if curX == 0 && curY == 0 {
-			fakeKeys = uint8(localRand.Intn(16)) // Random WASD
-		} else {
-			// Kiểm tra vị trí so với tâm
-			distToCenterX := curX - MapCenter
-			distToCenterY := curY - MapCenter
+		if curX != 0 && curY != 0 && isOutOfBounds {
+			var newKeys uint8
+			if distX > Boundary { newKeys |= uint8(def.InputA) }
+			if distX < -Boundary { newKeys |= uint8(def.InputD) }
+			if distY > Boundary { newKeys |= uint8(def.InputW) }
+			if distY < -Boundary { newKeys |= uint8(def.InputS) }
 
-			// Nếu quá xa tâm về bên phải -> Ấn 'A' (Sang trái)
-			if distToCenterX > Boundary {
-				fakeKeys |= uint8(def.InputA)
-			} else if distToCenterX < -Boundary { // Quá xa về bên trái -> Ấn 'D'
-				fakeKeys |= uint8(def.InputD)
-			}
-
-			// Nếu quá xa tâm về phía dưới -> Ấn 'W' (Lên trên)
-			if distToCenterY > Boundary {
-				fakeKeys |= uint8(def.InputW)
-			} else if distToCenterY < -Boundary { // Quá xa về phía trên -> Ấn 'S'
-				fakeKeys |= uint8(def.InputS)
-			}
-
-			// Nếu vẫn ở trong vùng an toàn, thi thoảng nhấn phím ngẫu nhiên cho tự nhiên
-			if fakeKeys == 0 {
-				fakeKeys = uint8(localRand.Intn(16))
-			}
+			state.CurrentKeys = newKeys
+			state.ActionTimeLeft = 1.5
+		} else if state.ActionTimeLeft <= 0 {
+			state.CurrentKeys = validMoves[localRand.Intn(len(validMoves))]
+			state.ActionTimeLeft = 0.5 + localRand.Float32()*2.0
 		}
 
-		// Thêm một chút tỉ lệ bắn chiêu ngẫu nhiên (LMB/RMB)
-		if localRand.Intn(100) < 5 { // 5% mỗi tick sẽ click chuột
-			fakeKeys |= uint8(def.InputLeftClick)
-		}
+		fakeKeys := state.CurrentKeys
+		state.mu.Unlock()
+
+		if localRand.Intn(100) < 3 { fakeKeys |= uint8(def.InputLeftClick) }
+		if localRand.Intn(1000) < 5 { fakeKeys |= uint8(def.InputSpace) }
+		if localRand.Intn(1000) < 5 { fakeKeys |= uint8(def.InputRightClick) }
 
 		fakeAngle := uint16(localRand.Intn(360))
-		fakeDist := uint16(localRand.Intn(200))
+		fakeDist := uint16(localRand.Intn(300))
 
+		// --- ĐÓNG GÓI GỬI LÊN SERVER ---
 		writer := NewPacketWriter(writeBuf[:0])
 		writer.WriteUint8(fakeKeys)
 		writer.WriteUint16(fakeAngle)
 		writer.WriteUint16(fakeDist)
 
-		writer.WriteUint8(0xFF)
-		writer.WriteUint8(uint8(len(receiver.ackQueue)))
-		for _, seq := range receiver.ackQueue {
-			writer.WriteUint16(seq)
-		}
+		writer.WriteUint8(0xFF) // Header báo hiệu ACK
+		highestSeq, bitfield := receiver.GetAckData()
+		writer.WriteUint16(highestSeq)
+		writer.WriteUint32(bitfield)
 
 		conn.Write(writer.Bytes())
-		receiver.ackQueue = receiver.ackQueue[:0]
 	}
 }
 
-func extractACKs(payload []byte, receiver *ReliableReciever, state *BotState) {
-	if len(payload) < 9 || payload[0] != 0xAA {
+// ==================================================
+// PARSER (Đọc dữ liệu từ Server)
+// ==================================================
+func parseServerPacket(payload []byte, receiver *NetworkChannel, state *BotState) {
+	if len(payload) < 6 || payload[0] != 0xAA {
 		return
 	}
-	
 	reader := NewPacketReader(payload)
-	reader.ReadUint8() // Header
-	reader.ReadUint8() // MatchState
-	reader.ReadFloat32() // ZoneX
-	reader.ReadFloat32() // ZoneY
-	reader.ReadFloat32() // ZoneRad
-	
-	playerCount := reader.ReadUint8()
-	
-	state.mu.Lock()
-	for i := 0; i < int(playerCount); i++ {
-		id := reader.ReadUint8()  
-		x := reader.ReadFloat32() 
-		y := reader.ReadFloat32() 
-		hp := reader.ReadUint16() 
+	reader.ReadUint8() // Bỏ qua 0xAA
 
-		// Nếu đây là chính mình (dựa trên ID mà Server cấp lúc Welcome)
-		// Hoặc đơn giản là lấy ID đầu tiên nếu chưa biết MyID
-		if state.MyID == 0 {
-			state.MyID = uint32(id)
-		}
-		
-		if uint32(id) == state.MyID {
-			state.X = x
-			state.Y = y
-		}
-		_ = hp
+	packetSeq := reader.ReadUint16()
+
+	// Đánh dấu nhận, nếu trùng lặp (false) thì vứt gói luôn
+	if !receiver.OnPacketReceived(packetSeq) {
+		return
 	}
-	state.mu.Unlock()
 
-	// Phần xử lý Event (Welcome, Spawn...) để lấy MyID chuẩn từ Server
-	if !reader.HasMore() { return }
-	header := reader.ReadUint8()
-	if header != 0xFF { return }
+	receiver.mu.Lock()
+	highest := receiver.HighestReceived
+	receiver.mu.Unlock()
+	isOutdated := !SeqMoreRecent(packetSeq, highest) && packetSeq != highest
 
-	eventCount := reader.ReadUint8()
-	for i := 0; i < int(eventCount) && reader.HasMore(); i++ {
-		func(){
+	hasSnapshot := reader.ReadUint8()
+	if hasSnapshot == 1 {
+		reader.ReadUint8() // MatchState
+		reader.ReadFloat32() // ZoneX
+		reader.ReadFloat32() // ZoneY
+		reader.ReadFloat32() // ZoneRad
 
-		seqID := reader.ReadUint16()
-		evType := reader.ReadUint8()
-		defer func ()  {
-				if r := recover(); r != nil {
-					// IN RA TOÀN BỘ THÔNG TIN ĐỂ DEBUG
-					fmt.Printf("🔥 [BOT ERROR] Panic khi đọc Event thứ %d/%d\n", i+1, eventCount)
-					fmt.Printf("Chi tiết lỗi: %v\n", r)
-					fmt.Printf("Trạng thái Reader: Offset=%d, Kích thước gói=%d\n", reader.Offset, len(reader.Buf))
-					fmt.Printf("Seq %d, evType %d  ",seqID,evType)
-					// Tùy theo code reader của bạn, in ra thêm nếu được
-					panic("Stop bot để xem lỗi") 
-				}	
-			}()
-		payloadLen := reader.ReadUint16()
+		playerCount := reader.ReadUint16()
+		state.mu.Lock()
+		for i := 0; i < int(playerCount); i++ {
+			id := reader.ReadUint16()
+			x := reader.ReadFloat32()
+			y := reader.ReadFloat32()
+			reader.ReadUint16() // HP
 
-		eventPayload := reader.ReadBytes(int(payloadLen))
-
-		// Cập nhật MyID khi nhận được Event Welcome
-		if evType == uint8(def.EventWelcome) {
-			welcomeReader := NewPacketReader(eventPayload)
-			state.mu.Lock()
-			state.MyID = uint32(welcomeReader.ReadUint8())
-			state.mu.Unlock()
+			if state.MyID == 0 {
+				state.MyID = uint32(id) // Lấy tạm nếu chưa có
+			}
+			// CHỐNG GIẬT LÙI: Chỉ cập nhật tọa độ nếu không phải gói quá khứ
+			if !isOutdated && uint32(id) == state.MyID {
+				state.X = x
+				state.Y = y
+			}
 		}
+		state.mu.Unlock()
+	}
 
-		receiver.RecieveEvent(seqID, evType, eventPayload)
-		}()
+	if reader.HasMore() && reader.ReadUint8() == 0xFF {
+		eventCount := reader.ReadUint8()
+		for i := 0; i < int(eventCount) && reader.HasMore(); i++ {
+			evType := reader.ReadUint8()
+			payloadLen := reader.ReadUint16()
+			eventPayload := reader.ReadBytes(int(payloadLen))
+
+			if evType == uint8(def.EventWelcome) {
+				r := NewPacketReader(eventPayload)
+				state.mu.Lock()
+				state.MyID = uint32(r.ReadUint8())
+				state.mu.Unlock()
+			}
+			// Các Event khác bot mù không cần quan tâm, chỉ cần báo ACK là đủ!
+		}
 	}
 }
+
+// ==================================================
+// PACKET WRITER & READER (Kèm theo để chạy được Script)
+// ==================================================
+type PacketWriter struct { Buf []byte }
+func NewPacketWriter(payload []byte) *PacketWriter { return &PacketWriter{Buf: payload} }
+func (w *PacketWriter) WriteUint8(v uint8) { w.Buf = append(w.Buf, v) }
+func (w *PacketWriter) WriteUint16(v uint16) { w.Buf = append(w.Buf, byte(v>>8), byte(v)) }
+func (w *PacketWriter) WriteUint32(v uint32) { w.Buf = append(w.Buf, byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) }
+func (w *PacketWriter) Bytes() []byte { return w.Buf }
+
+type PacketReader struct { Buf []byte; Offset int }
+func NewPacketReader(data []byte) *PacketReader { return &PacketReader{Buf: data, Offset: 0} }
+func (r *PacketReader) ReadUint8() uint8 { v := r.Buf[r.Offset]; r.Offset++; return v }
+func (r *PacketReader) ReadUint16() uint16 { v := uint16(r.Buf[r.Offset])<<8 | uint16(r.Buf[r.Offset+1]); r.Offset += 2; return v }
+func (r *PacketReader) ReadFloat32() float32 {
+	i := uint32(r.Buf[r.Offset])<<24 | uint32(r.Buf[r.Offset+1])<<16 | uint32(r.Buf[r.Offset+2])<<8 | uint32(r.Buf[r.Offset+3])
+	r.Offset += 4
+	return math.Float32frombits(i)
+}
+func (r *PacketReader) ReadBytes(len int) []byte {
+	payload := make([]byte, len)
+	copy(payload, r.Buf[r.Offset:r.Offset+len])
+	r.Offset += len
+	return payload
+}
+func (r *PacketReader) HasMore() bool { return r.Offset < len(r.Buf) }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	def "game/pkg"
 	"math"
 	"math/bits"
@@ -639,40 +640,9 @@ func NewKillEvent(entity Entity)RawEvent{
 	ev.WriteUint32(uint32(entity))
 	return ev
 }
-type CleanSystem struct{
-	deads []Entity
-}
-func ( s *CleanSystem)process(engine *ArchEngine, outbox *NetworkOutbox){
-	s.deads=s.deads[:0]
-	RunSystem2Ex(engine,0, func(count int, entities []Entity, deads []TagDead, masks []VisibilityMask) {
-		for i := 0; i < count; i++ {
-			s.deads = append(s.deads, entities[i])
-			
-			ev := NewRemoveEntityEvent(entities[i]) 
-			
-			masks[i].ForAll(func(teamID uint8) {
-				outbox.Teams = append(outbox.Teams, TeamEvent{
-					TeamID: teamID,
-					Event:  ev,
-				})
-			})
-		}
-	})
-	RunSystem2(engine, func(count int, entities []Entity, deads []TagDead, players []TagPlayer) {
-		for i := 0; i < count; i++ {
-			ev := NewKillEvent(entities[i])
-			outbox.Globals = append(outbox.Globals, ev)
-		}
-	})
-	if len(s.deads)==0{
-		return
-	}
-	// //fmt.println(" len deads ", len(s.deads))
-	for _, e := range s.deads {
-		
-		engine.RemoveEntity(e)
-	}
-}
+
+
+
 type BounceSystem struct{
 	deads []Entity
 	updates []Entity
@@ -974,30 +944,16 @@ func VisionCalculationSystem(engine *ArchEngine, visions *CellsVisibilityMask) {
 			for i := 0; i < count; i++ {
 			t := trans[i]
 			teamID := facs[i].TeamID
-			
-			visionRadius := float32(sights[i].Radius) 
 
-			minCol := int(t.X-visionRadius) / VisionCellSize
-			maxCol := int(t.X+visionRadius) / VisionCellSize
-			minRow := int(t.Y-visionRadius) / VisionCellSize
-			maxRow := int(t.Y+visionRadius) / VisionCellSize
-
-			if minCol < 0 { minCol = 0 }
-			if maxCol >= VisionGridCols { maxCol = VisionGridCols - 1 }
-			if minRow < 0 { minRow = 0 }
-			if maxRow >= VisionGridRows { maxRow = VisionGridRows - 1 }
-
-			for col := minCol; col <= maxCol; col++ {
-				for row := minRow; row <= maxRow; row++ {
-					// Tâm của ô Vision lưới nhỏ
-					x := float32(col*VisionCellSize) + float32(VisionCellSize)*0.5
-					y := float32(row*VisionCellSize) + float32(VisionCellSize)*0.5
-
-					if checkCircleVsAABB(t.X, t.Y, visionRadius, x, y, VisionCellSize, VisionCellSize) {
-						idx := uint16(row*VisionGridCols + col)
-						visions[idx].Set(teamID)
-					}
-				}
+			colCurrent := int(t.X)/VisionCellSize
+			rowCurrent := int(t.Y)/VisionCellSize
+			for _,cell:=range visionTemplates[sights[i].TemplateID]{
+				col:= colCurrent+cell.dCol
+				row := rowCurrent + cell.dRow
+			 	if col >= 0 && col < VisionGridCols && row >= 0 && row < VisionGridRows {
+                    idx := uint16(row*VisionGridCols + col)
+                    visions[idx].Set(teamID)
+                }
 			}
 		}
 			
@@ -1005,17 +961,18 @@ func VisionCalculationSystem(engine *ArchEngine, visions *CellsVisibilityMask) {
 }
 
 func VisionTriggerSystem(engine *ArchEngine, visions *CellsVisibilityMask, outbox *NetworkOutbox){
-	RunSystem4Ex(engine,GetMask[TagDead]()|GetMask[NetSync](), func(count int, entities []Entity, masks []VisibilityMask, visuals []NetVisual,trans []Transform, cols[]Collider) {
+	RunSystem4Ex(engine,GetMask[TagDead]()|GetMask[NetSync](), func(count int, entities []Entity, masks []VisibilityMask, visuals []NetVisual,trans []Transform, bounds []BoundingBox) {
 		for i:=0; i < count;i++{
 			mask := &masks[i]
 			visual := visuals[i]
 			t := trans[i]
-			visionRadius := float32(cols[i].Radius) 
+			bound := bounds[i]
+			// hatf := bounds[i]
 
-			minCol := int(t.X-visionRadius) / VisionCellSize
-			maxCol := int(t.X+visionRadius) / VisionCellSize
-			minRow := int(t.Y-visionRadius) / VisionCellSize
-			maxRow := int(t.Y+visionRadius) / VisionCellSize
+			minCol := int(t.X-bound.HalfW) / VisionCellSize
+			maxCol := int(t.X+bound.HalfW) / VisionCellSize
+			minRow := int(t.Y-bound.HalfH) / VisionCellSize
+			maxRow := int(t.Y+bound.HalfH) / VisionCellSize
 
 			if minCol < 0 { minCol = 0 }
 			if maxCol >= VisionGridCols { maxCol = VisionGridCols - 1 }
@@ -1031,20 +988,15 @@ func VisionTriggerSystem(engine *ArchEngine, visions *CellsVisibilityMask, outbo
 			rawEv := visual.createRawEvent(t)
 			gainedVisionMask := resMask.AndNot(*mask)
 			gainedVisionMask.ForAll(func(teamID uint8) {
-				outbox.Teams = append(outbox.Teams, TeamEvent{
-					TeamID: teamID,
-					Event:  rawEv, // Event Spawn / Hiện hình
-				})
+				outbox.Teams[teamID]=append(outbox.Teams[teamID], 
+				rawEv)
 			})
 			lostVisionMask := mask.AndNot(*resMask)
 			lostVisionMask.ForAll(func(teamID uint8) {
 				// TẠO EVENT ẨN/XÓA ENTITY GỬI CHO CLIENT (Bạn cần hàm tạo event này)
 				hideEv := NewRemoveEntityEvent(entities[i]) 
 				// fmt.Println("vien dan ra khoi tam nhin E: ",entities[i] )
-				outbox.Teams = append(outbox.Teams, TeamEvent{
-					TeamID: teamID,
-					Event:  hideEv,
-				})
+				outbox.Teams[teamID]=append(outbox.Teams[teamID], hideEv)
 			})
 			*mask=*resMask
 		}
@@ -1089,6 +1041,37 @@ func VisionTriggerVialitySystem(engine *ArchEngine, visions *CellsVisibilityMask
 		}
 	})
 }
+type CleanSystem struct{
+	deads []Entity
+}
+func ( s *CleanSystem)process(engine *ArchEngine, outbox *NetworkOutbox){
+	s.deads=s.deads[:0]
+	RunSystem2Ex(engine,0, func(count int, entities []Entity, deads []TagDead, masks []VisibilityMask) {
+		for i := 0; i < count; i++ {
+			s.deads = append(s.deads, entities[i])
+			
+			ev := NewRemoveEntityEvent(entities[i]) 
+			
+			masks[i].ForAll(func(teamID uint8) {
+					outbox.Teams[teamID]=append(outbox.Teams[teamID], ev)
+			})
+		}
+	})
+	RunSystem2(engine, func(count int, entities []Entity, deads []TagDead, players []TagPlayer) {
+		for i := 0; i < count; i++ {
+			ev := NewKillEvent(entities[i])
+			outbox.Globals = append(outbox.Globals, ev)
+		}
+	})
+	if len(s.deads)==0{
+		return
+	}
+	// //fmt.println(" len deads ", len(s.deads))
+	for _, e := range s.deads {
+		
+		engine.RemoveEntity(e)
+	}
+}
 // Bạn nên đặt System này ở file network_systems.go
 type TrajectorySyncSystem struct{
 	removes []Entity
@@ -1102,10 +1085,7 @@ func (s *TrajectorySyncSystem)process(engine *ArchEngine, outbox *NetworkOutbox)
 			
 			// Phát gói tin Update cho các Team đang nhìn thấy
 			masks[i].ForAll(func(teamID uint8) {
-				outbox.Teams = append(outbox.Teams, TeamEvent{
-					TeamID: teamID,
-					Event:  updateEv,
-				})
+				outbox.Teams[teamID]=append(outbox.Teams[teamID], updateEv)
 			})
 			s.removes=append(s.removes, entities[i])
 		}
@@ -1121,4 +1101,38 @@ func (s *TrajectorySyncSystem)process(engine *ArchEngine, outbox *NetworkOutbox)
 	// 		removeComponent[TrajectoryChanged](engine, entities[i])
 	// 	}
 	// })
+}
+type VisionOffset struct {
+    dCol int
+    dRow int
+}
+var visionTemplates [3][]VisionOffset
+
+func InitVisionTemplates() {
+    
+    
+    // Giả sử game bạn có 2 loại tầm nhìn: 500 (Ngắn) và 800 (Dài)
+    radiuses := []float32{500.0, 800.0} 
+
+    for i, r := range radiuses {
+        var template []VisionOffset
+        
+        // Giả sử tâm của vòng tròn nằm ở CHÍNH GIỮA ô lưới tọa độ (0,0)
+        maxCells := int(r / float32(VisionCellSize)) + 1
+        
+        for dRow := -maxCells; dRow <= maxCells; dRow++ {
+            for dCol := -maxCells; dCol <= maxCells; dCol++ {
+                // Tọa độ float của ô lưới tương đối
+                cellCenterX := float32(dCol)*float32(VisionCellSize) 
+                cellCenterY := float32(dRow)*float32(VisionCellSize)
+                
+                // Dùng hàm check của bạn 1 lần duy nhất ở đây
+                if checkCircleVsAABB(0, 0, r, cellCenterX, cellCenterY, float32(VisionCellSize), float32(VisionCellSize)) {
+                    template = append(template, VisionOffset{dCol: dCol, dRow: dRow})
+                }
+            }
+        }
+        visionTemplates[i] = template
+    }
+    fmt.Printf("Đã build xong Vision Template. Bán kính 500 chiếm %d ô lưới.\n")
 }
