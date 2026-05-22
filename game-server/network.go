@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/bits"
 	"sync"
 	"sync/atomic"
 
@@ -48,190 +49,126 @@ func (nio *NetworkIO)  ReadBatch( buffer *PacketBuffer) {
 		})
 	}
 }
-// TẠI FILE: network.go
-
-func (n *NetworkIO) BroadcastState(state *MatchState, clientSOA *ClientsSoA, outbox *NetworkOutbox) {
+type FinalSnapshot struct{
+	idxs [MaxPlayers][MaxPlayers]uint16
+	counts [MaxPlayers]uint16
+}
+func (nio *NetworkIO) GatherVisibleSnapshots(countPlayer uint16 ,frameShapshot []SnapShotData, snapshots []SnapShotData, clientsSOA *ClientsSoA, finalSnapshot *FinalSnapshot){
 	
-	// Khai báo sẵn các biến dùng chung ngoài vòng lặp để tránh cấp phát lại
-	tickCount := state.TickCount
-	matchState := state.MatchState
-	zoneX, zoneY, zoneRadius := state.Zone.X, state.Zone.Y, state.Zone.Radius
+	for i := range finalSnapshot.counts {
+		finalSnapshot.counts[i] = 0
+	}
+	sz := (countPlayer+63)>>6
 
-	// DUYỆT QUA TẤT CẢ CLIENT
-	for i := uint16(0); i < MaxPlayers; i++ {
+	for i := uint16(0); i < uint16(len(frameShapshot)); i++ {
+		mask := frameShapshot[i].Mask
+		for j := uint16(0); j < sz; j++ {
+			bitsVal := mask.KnownByTeams[j]
+			if bitsVal == 0 {
+				continue
+			}
+			for bitsVal!= 0{
+				id := (j << 6) + uint16(bits.TrailingZeros64(bitsVal))
+				finalSnapshot.idxs[id][finalSnapshot.counts[id]] = i 
+				finalSnapshot.counts[id]++
+				bitsVal &= bitsVal - 1
+			}
+		}
 		
-		// 1. KIỂM TRA ĐIỀU KIỆN (Dữ liệu Nóng - truy cập cực nhanh)
-		addr := clientSOA.Addrs[i]
-		if addr == nil || clientSOA.IsDisconnected[i] {
-			continue
+	}
+}
+func (nio *NetworkIO) WriteBatch(globalEvent *GlobalEvent, frameShapshot []SnapShotData, clientsSOA *ClientsSoA, currentTick uint64, snapshots *FinalSnapshot) {
+	// GatherVisibleSnapshots()
+	for i :=0 ; i< MaxPlayers; i++{
+		if clientsSOA.States[i].IsDisconnected || clientsSOA.Endpoints[i].Addr == nil{
+			continue		 						
 		}
 
-		// 2. CHUẨN BỊ CON TRỎ & SLICE (Lấy 1 lần duy nhất cho toàn bộ quy trình)
-		teamID := clientSOA.TeamIDs[i]
-		queue := &clientSOA.EventQueues[i]
-		inflightHeader := &clientSOA.Inflights[i]
-		inflightDataArray := &clientSOA.InFlightsEvents[i] // Trỏ tới cục Lạnh 125MB
-		clientVision := outbox.Positions[teamID]       // Trỏ tới cục Snapshot
+		packetSeq := clientsSOA.States[i].NextPacketSeq
+		clientsSOA.States[i].NextPacketSeq++
+		// eventQueue := &clientsSOA.Events[i]
+		nio.writer.Reset()
+		nio.writer.WriteUint8(0xAA)   // Magic byte bắt buộc
+		// nio.writer.WriteUint8(0x00)  
+		nio.writer.WriteUint16(packetSeq)
+		nio.writer.WriteUint8(1) // hasSnapshot = 1 (Luôn có)
 
-		isFirstPacketOfTick := true
+		nio.writer.WriteUint8(0) // MatchState (Byte bỏ qua)
+		
+		// Ghi Tọa độ vòng bo (Bạn thay thế biến tương ứng trong MatchState của bạn)
+		nio.writer.WriteFloat32(0.0) // zX (Ví dụ: matchState.ZoneX)
+		nio.writer.WriteFloat32(0.0) // zY (Ví dụ: matchState.ZoneY)
+		nio.writer.WriteFloat32(0.0) // zRad (Ví dụ: matchState.ZoneRad)
+		
+		playerCountIDx := nio.writer.Pos// Placeholder cho số lượng player
+		nio.writer.WriteUint16(0)
+		count := uint16(0)
 
-		// VÒNG LẶP GỬI GÓI TIN (Cho đến khi hết Queue)
-		for queue.count > 0 || isFirstPacketOfTick {
-			
-			// --- A. LẤY SEQUENCE (Dữ liệu Nóng) ---
-			packetSeq := clientSOA.NextPacketSeqs[i]
-			clientSOA.NextPacketSeqs[i]++
-			idx255 := packetSeq & 255
-
-			// --- B. KHỞI TẠO BỘ ĐỆM (Writer) ---
-			writer := n.writer
-			writer.Reset()
-			writer.WriteUint8(0xAA)
-			writer.WriteUint16(packetSeq)
-
-			// ==========================================
-			// --- C. GHI SNAPSHOT (Đọc tuần tự từ mảng Positions) ---
-			// ==========================================
-			if isFirstPacketOfTick {
-				writer.WriteUint8(1)
-				writer.WriteUint8(matchState)
-				writer.WriteFloat32(zoneX)
-				writer.WriteFloat32(zoneY)
-				writer.WriteFloat32(zoneRadius)
-
-				countOffset := writer.Pos
-				writer.WriteUint16(0) 
-
-				visibleCount := uint16(0)
-				for _, p := range clientVision {
-					if writer.Pos + 12 > SafeMTU - 60 { break } // Bảo vệ MTU
-					
-					writer.WriteUint16(p.NetID)
-					writer.WriteFloat32(p.X)
-					writer.WriteFloat32(p.Y)
-					writer.WriteUint16(p.HP)
-					visibleCount++
-				}
-				writer.Buf[countOffset] = byte(visibleCount >> 8)
-				writer.Buf[countOffset+1] = byte(visibleCount)
-				
-				isFirstPacketOfTick = false
-			} else {
-				writer.WriteUint8(0) 
-			}
-			writer.WriteUint8(0xFF) // Phân cách Snapshot và Event
-
-			// ==========================================
-			// --- D. GHI EVENTS (Đọc từ Queue -> Ghi vào Writer & Inflight) ---
-			// ==========================================
-			eventCountIdx := writer.Pos
-			writer.WriteUint8(0)
-
-			eventsSlice := queue.PeekBatch(MaxEventsPerPkt)
-			eventCount := uint8(0)
-			
-			if len(eventsSlice) > 0 {
-				// CẮM MỤC TIÊU VÀO ĐÚNG MẢNG ĐÍCH (Kích hoạt BCE & Prefetch)
-				targetInflight := &inflightDataArray[idx255]
-				_ = targetInflight[31] // BCE Hint
-
-				currentBufLen := writer.Pos
-				
-				for evIdx := range eventsSlice {
-					ev := &eventsSlice[evIdx] 
-					evLen := int(ev.Len) 
-					
-					if currentBufLen + evLen + 5 > SafeMTU {
-						break 
-					}
-					currentBufLen += evLen
-					
-					// 1. Backup vào Inflight (Ghi vào mảng Lạnh)
-					targetInflight[eventCount] = *ev 
-					
-					// 2. Đóng gói vào UDP (Ghi vào mảng Nóng của bộ nhớ đệm mạng)
-					writer.WriteUint8(ev.Type)
-					writer.WriteUint16(uint16(evLen))
-					writer.WriteBytes(ev.Payload[:evLen])
-					
-					eventCount++
-				}
-				// Tiêu thụ Event khỏi Queue
-				queue.ConsumeBatch(int(eventCount))
-			}
-
-			// --- E. CẬP NHẬT HEADER & CHỐT SỔ GÓI TIN ---
-			writer.Buf[eventCountIdx] = uint8(eventCount)
-			
-			// Cập nhật Inflight Header (Dữ liệu Nóng)
-			inflightHeader.Masks[idx255>>6] |= (1 << (idx255 & 63))
-			inflightHeader.PacketSeqs[idx255] = packetSeq
-			inflightHeader.Senticks[idx255] = tickCount
-			inflightHeader.EventCounts[idx255] = eventCount
-
-			// Quăng xuống card mạng (Tạm lưu vào OS buffer)
-			n.engine.QueueToSend(writer.Bytes(), addr)
+		for j:= uint16(0); j< snapshots.counts[i]; j++{
+			idx := snapshots.idxs[i][j]
+			snap := &(frameShapshot)[idx]
+			nio.writer.WriteUint16(snap.NetID)
+			nio.writer.WriteFloat32(snap.X)
+			nio.writer.WriteFloat32(snap.Y)
+			nio.writer.WriteUint16(snap.HP)
+			count++
 		}
+		nio.writer.Buf[playerCountIDx] = byte(count>>8)
+		nio.writer.Buf[playerCountIDx+1] = byte(count )
+		// fmt.Println("playerCOunt ",count)
+		// fmt.Println("frame ", frameShapshot)
+		
+		nio.writer.WriteUint8(0xFF)
+		eventCountIDx := nio.writer.Pos
+		nio.writer.WriteUint8(0) // Placeholder cho số lượng event
+		eventCount := uint8(0)
+		head := clientsSOA.Events_Header[i].Head
+		tail := clientsSOA.Events_Header[i].Tail
+		data := &clientsSOA.Events_Data[i]
+		for j := tail; j < head; j++{
+
+			idx := j & (MaxEvents - 1)
+			if data[idx].IsReceived {
+				continue
+			}
+			lastSent := data[idx].LastSentTick
+			if data[idx].PacketSeq == 0 || (currentTick - lastSent > 10) {
+				// fmt.Printf("[DEBUG] currentTick %d - lastSentTick %d Client %d, Checking queue slot j=%d (idx=%d), EventID=%d\n", currentTick, lastSent, i, j, idx, eventQueue.EventIDs[idx])				
+				// fmt.Println("Dist ", currentTick - lastSent, " -" , (currentTick - lastSent > 10),"or ",eventQueue.PacketSequences[idx] == 0 )
+				
+				data[idx].LastSentTick = currentTick
+				data[idx].PacketSeq = packetSeq
+				
+				evID := data[idx].EventID & GlobalEventMask
+
+				ev := &globalEvent.Events[evID]
+		
+				nio.writer.WriteUint8(ev.Type)
+				nio.writer.WriteUint16(uint16(ev.Len)) 
+				nio.writer.WriteBytes(ev.Payload[:ev.Len])
+				// fmt.Println("gui event id ", evID, " len ", ev.Len, " type ", ev.Type, " payload ", ev.Payload[:ev.Len])
+				eventCount++
+			}
+			if eventCount == 255 {
+				break 
+			}
+			// fmt.Println("data ", nio.writer.Buf[:nio.writer.Pos])
+		}
+		nio.writer.Buf[eventCountIDx] = byte(eventCount)
+		// fmt.Println("event count ",eventCount)
+		// nio.writer.Buf[eventCountIDx+1] = byte(eventCount >> 8)
+		
+		// DEBUG: In toàn bộ bytes
+		payload := nio.writer.Buf[:nio.writer.Pos]
+		// fmt.Printf("PACKET HEX: ")
+		// for i, b := range payload {
+		// 	fmt.Printf("[%d]=%02x ", i, b)
+		// }
+		// fmt.Printf("\n")
+		
+		nio.engine.QueueToSend(payload, clientsSOA.Endpoints[i].Addr)  
+		
 	}
+	nio.engine.FlushSend()
 
-	// 3. FLUSH TẤT CẢ XUỐNG CARD MẠNG MỘT LẦN CHÓT
-	n.engine.FlushSend()
-}
-type EventQueue struct{
-	data [EventQueueSize]RawEvent
-	head uint16 
-	tail uint16 
-	count int
-}
-func (s *EventQueue) Claim() *RawEvent {
-    if s.count < EventQueueSize {
-        return &s.data[s.tail]
-    }
-    return nil
-}
-func (s *EventQueue) Commit() {
-    s.tail = (s.tail + 1) & EventQueueMask
-    s.count++
-}
-func (s *EventQueue) PushBatch(events []RawEvent) {
-    n := len(events)
-    if n == 0 || s.count+n > EventQueueSize {
-        return // Xử lý lỗi đầy hàng đợi tùy bạn
-    }
-	spaceAtEnd := EventQueueSize-s.tail
-	if(n <= int(spaceAtEnd)){
-		copy(s.data[s.tail:],events)
-	}else{
-		copy(s.data[s.tail:],events[:spaceAtEnd])
-		copy(s.data[0:],events[spaceAtEnd:])
-	}
-	s.tail=(s.tail+uint16(n)) & EventQueueMask
-	s.count+=n
-}
-func (s *EventQueue) PeekBatch(max int) []RawEvent {
-    if s.count == 0 {
-        return nil
-    }
-    
-    n := max
-    if n > s.count {
-        n = s.count
-    }
-
-    spaceAtEnd := EventQueueSize - int(s.head)
-    if n > spaceAtEnd {
-        n = spaceAtEnd 
-    }
-    return s.data[s.head : int(s.head)+n]
-}
-
-// Bỏ đi N phần tử cùng lúc
-func (s *EventQueue) ConsumeBatch(n int) {
-    s.head = uint16((int(s.head) + n) & EventQueueMask)
-    s.count -= n
-}
-func (s *EventQueue)Clear(){
-	s.count=0
-	s.head=0
-	s.tail=0
 }

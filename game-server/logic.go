@@ -55,7 +55,7 @@ func CalculateAABB(shape def.Shape, radius, width, height float32, angle uint16)
 // ==========================================
 // 1. HỆ LỬA (FIRE)
 // ==========================================
-func SpawnFireball(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
+func SpawnFireball(engine *ArchEngine, owner Entity, team uint16, x, y float32, angle uint16) {
 	e := engine.CreateEntity()
 	vx, vy := getVelocity(angle, 1200.0)
 	
@@ -73,9 +73,13 @@ func SpawnFireball(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 	// --- LOGIC TẦM NHÌN ---
 	addComponent(engine, e, VisibilityMask{})
 	addComponent(engine, e, NetVisual{
-		createRawEvent: func(tran Transform) RawEvent {
-			return NewSpawnProjectEvent(e, def.SpellFireball, tran.X, tran.Y, tran.Angle)
-		},
+		// createRawEvent: func(tran Transform) RawEvent {
+		// 	return NewSpawnProjectEvent(e, def.SpellFireball, tran.X, tran.Y, tran.Angle)
+		// },
+		EventType: def.EventSpawnProjectile,
+		Entity:    e,
+		SubType:   uint8(def.SpellFireball),
+
 	})
 
 	// --- VỤ NỔ KHI CHẾT ---
@@ -92,15 +96,19 @@ func SpawnFireball(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 			// Vụ nổ cũng cần tầm nhìn (Fog piercing)
 			addComponent(engine, exp, VisibilityMask{})
 			addComponent(engine, exp, NetVisual{
-				createRawEvent: func(tran Transform) RawEvent {
-					return NewSpawnVFX(def.VFXFireExplosion,e, tran.X, tran.Y, 100) // Client vẽ nổ 0.5s
-				},
+				// createRawEvent: func(tran Transform) RawEvent {
+				// 	return NewSpawnVFX(def.VFXFireExplosion,e, tran.X, tran.Y, 100) // Client vẽ nổ 0.5s
+				// },
+				EventType: def.EventSpawnVFX,
+				Entity:    e,
+				SubType:   uint8(def.VFXFireExplosion),
+				ExtraValue: 100,
 			})
 		},
 	})
 }
 
-func SpawnFlamewall(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16) {
+func SpawnFlamewall(engine *ArchEngine, owner Entity, team uint16, x, y float32, angle uint16, dist uint16) {
 	e := engine.CreateEntity()
 	if dist > 400 { dist = 400 }
 	rad := float64(angle) * (math.Pi / 180.0)
@@ -122,16 +130,20 @@ func SpawnFlamewall(engine *ArchEngine, owner Entity, team uint8, x, y float32, 
 	// --- LOGIC TẦM NHÌN ---
 	addComponent(engine, e, VisibilityMask{})
 	addComponent(engine, e, NetVisual{
-		createRawEvent: func(tran Transform) RawEvent {
-			return NewSpawnVFX(def.VFXFlamewall,e, tran.X, tran.Y,tran.Angle)
-		},
+		// createRawEvent: func(tran Transform) RawEvent {
+		// 	return NewSpawnVFX(def.VFXFlamewall,e, tran.X, tran.Y,tran.Angle)
+		// },
+		EventType: def.EventSpawnVFX,
+		Entity:    e,
+		SubType:   uint8(def.VFXFlamewall),
+		ExtraValue: 0,
 	})
 }
 
 // ==========================================
 // 2. HỆ ĐỘC (POISON)
 // ==========================================
-func SpawnToxicSpray(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
+func SpawnToxicSpray(engine *ArchEngine, owner Entity, team uint16	, x, y float32, angle uint16) {
 	offsets := []int{-20, -10, 0, 10, 20}
 	for _, offset := range offsets {
 		e := engine.CreateEntity()
@@ -152,14 +164,17 @@ func SpawnToxicSpray(engine *ArchEngine, owner Entity, team uint8, x, y float32,
 		// --- LOGIC TẦM NHÌN ---
 		addComponent(engine, e, VisibilityMask{})
 		addComponent(engine, e, NetVisual{
-			createRawEvent: func(tran Transform) RawEvent {
-				return NewSpawnProjectEvent(e, def.SpellToxicSpray, tran.X, tran.Y, tran.Angle)
-			},
+			//createRawEvent: func(tran Transform) RawEvent {
+			//	return NewSpawnProjectEvent(e, def.SpellToxicSpray, tran.X, tran.Y, tran.Angle)
+			//},
+			EventType: def.EventSpawnProjectile,
+			Entity:    e,
+			SubType:   uint8(def.SpellToxicSpray),
 		})
 	}
 }
 
-func SpawnToxicCloud(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16) {
+func SpawnToxicCloud(engine *ArchEngine, owner Entity, team uint16, x, y float32, angle uint16, dist uint16) {
 	e := engine.CreateEntity()
 	if dist > 200 { dist = 200 }
 	rad := float64(angle) * (math.Pi / 180.0)
@@ -177,16 +192,19 @@ func SpawnToxicCloud(engine *ArchEngine, owner Entity, team uint8, x, y float32,
 	// --- LOGIC TẦM NHÌN ---
 	addComponent(engine, e, VisibilityMask{})
 	addComponent(engine, e, NetVisual{
-		createRawEvent: func(tran Transform) RawEvent {
-			return NewSpawnVFX(def.VFXToxicCloud,e, tran.X, tran.Y, 0)
-		},
+		// createRawEvent: func(tran Transform) RawEvent {
+		// 	return NewSpawnVFX(def.VFXToxicCloud,e, tran.X, tran.Y, 0)
+		// },
+		EventType: def.EventSpawnVFX,
+		Entity:    e,
+		SubType:   uint8(def.VFXToxicCloud),
 	})
 }
 
 // ==========================================
 // 3. HỆ BĂNG (ICE) & CÁC HỆ KHÁC TƯƠNG TỰ
 // ==========================================
-func SpawnFlashFreeze(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16) {
+func SpawnFlashFreeze(engine *ArchEngine, owner Entity, team uint16, x, y float32, angle uint16, dist uint16) {
 	if dist > 300 { dist = 300 }
 	rad := float64(angle) * (math.Pi / 180.0)
 	spawnX := x + float32(math.Cos(rad))*float32(dist)
@@ -204,9 +222,12 @@ func SpawnFlashFreeze(engine *ArchEngine, owner Entity, team uint8, x, y float32
 	// --- LOGIC TẦM NHÌN: CẢNH BÁO ---
 	addComponent(engine, e, VisibilityMask{})
 	addComponent(engine, e, NetVisual{
-		createRawEvent: func(tran Transform) RawEvent {
-			return NewSpawnVFX(def.VFXIceWarning, e,tran.X, tran.Y,0)
-		},
+		// createRawEvent: func(tran Transform) RawEvent {
+		// 	return NewSpawnVFX(def.VFXIceWarning, e,tran.X, tran.Y,0)
+		// },
+		EventType: def.EventSpawnVFX,
+		Entity:    e,
+		SubType:   uint8(def.VFXIceWarning),
 	})
 
 	// --- LOGIC TẦM NHÌN: VỤ NỔ ---
@@ -225,14 +246,18 @@ func SpawnFlashFreeze(engine *ArchEngine, owner Entity, team uint8, x, y float32
 			
 			addComponent(engine, exp, VisibilityMask{})
 			addComponent(engine, exp, NetVisual{
-				createRawEvent: func(tran Transform) RawEvent {
-					return NewSpawnVFX(def.VFXIceExplosion,e, tran.X, tran.Y, 250)
-				},
+				// createRawEvent: func(tran Transform) RawEvent {
+				// 	return NewSpawnVFX(def.VFXIceExplosion,e, tran.X, tran.Y, 250)
+				// },
+				EventType: def.EventSpawnVFX,
+				Entity:    e,
+				SubType:   uint8(def.VFXIceExplosion),
+				ExtraValue: 250,
 			})
 		},
 	})
 }
-func SpawnIceLance(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
+func SpawnIceLance(engine *ArchEngine, owner Entity, team uint16, x, y float32, angle uint16) {
 	e := engine.CreateEntity()
 	vx, vy := getVelocity(angle, 500) // Bắn cực nhanh
 	
@@ -248,10 +273,14 @@ func SpawnIceLance(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 
 	// --- LOGIC TẦM NHÌN (Viên đạn băng) ---
 	addComponent(engine, e, VisibilityMask{})
+	
 	addComponent(engine, e, NetVisual{
-		createRawEvent: func(tran Transform) RawEvent {
-			return NewSpawnProjectEvent(e, def.SpellIceLance, tran.X, tran.Y, tran.Angle)
-		},
+		// createRawEvent: func(tran Transform) RawEvent {
+		// 	return NewSpawnProjectEvent(e, def.SpellIceLance, tran.X, tran.Y, tran.Angle)
+		// },
+		EventType: 	def.EventSpawnProjectile,
+		Entity:		e,
+		SubType:	uint8(def.SpellIceLance),
 	})
 
 	// --- VỆT BĂNG ĐỂ LẠI (Trail Emitter) ---
@@ -275,9 +304,13 @@ func SpawnIceLance(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 			// Tầm nhìn cho từng cục Trail
 			addComponent(engine, trail, VisibilityMask{})
 			addComponent(engine, trail, NetVisual{
-				createRawEvent: func(tran Transform) RawEvent {
-					return NewSpawnVFX(def.VFXIceTrail,trail, tran.X, tran.Y, 15)
-				},
+				// createRawEvent: func(tran Transform) RawEvent {
+				// 	return NewSpawnVFX(def.VFXIceTrail,trail, tran.X, tran.Y, 15)
+				// },
+				EventType: def.EventSpawnVFX,
+				Entity:    trail,
+				SubType:   uint8(def.VFXIceTrail),
+				ExtraValue: 15,
 			})
 		},
 	})
@@ -286,7 +319,7 @@ func SpawnIceLance(engine *ArchEngine, owner Entity, team uint8, x, y float32, a
 // ==========================================
 // 4. HỆ GIÓ (WIND)
 // ==========================================
-func SpawnWindShear(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
+func SpawnWindShear(engine *ArchEngine, owner Entity, team uint16, x, y float32, angle uint16) {
 	e := engine.CreateEntity()
 	vx, vy := getVelocity(angle, 1500.0)
 	
@@ -304,13 +337,17 @@ func SpawnWindShear(engine *ArchEngine, owner Entity, team uint8, x, y float32, 
 	// --- LOGIC TẦM NHÌN ---
 	addComponent(engine, e, VisibilityMask{})
 	addComponent(engine, e, NetVisual{
-		createRawEvent: func(tran Transform) RawEvent {
-			return NewSpawnProjectEvent(e, def.SpellWindShear, tran.X, tran.Y, tran.Angle)
-		},
+		// createRawEvent: func(tran Transform) RawEvent {
+		// 	return NewSpawnProjectEvent(e, def.SpellWindShear, tran.X, tran.Y, tran.Angle)
+		// },
+		EventType: def.EventSpawnProjectile,
+		Entity:    e,
+		SubType:   uint8(def.SpellWindShear),
+
 	})
 }
 
-func SpawnTornado(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16, dist uint16) {
+func SpawnTornado(engine *ArchEngine, owner Entity, team uint16, x, y float32, angle uint16, dist uint16) {
 	if dist > 400 { dist = 300 }
 	rad := float64(angle) * (math.Pi / 180.0)
 	spawnX := x + float32(math.Cos(rad))*float32(dist)
@@ -328,16 +365,19 @@ func SpawnTornado(engine *ArchEngine, owner Entity, team uint8, x, y float32, an
 	// --- LOGIC TẦM NHÌN ---
 	addComponent(engine, e, VisibilityMask{})
 	addComponent(engine, e, NetVisual{
-		createRawEvent: func(tran Transform) RawEvent {
-			return NewSpawnVFX(def.VFXTornado, e,tran.X, tran.Y, 0)
-		},
+		// createRawEvent: func(tran Transform) RawEvent {
+		// 	return NewSpawnVFX(def.VFXTornado, e,tran.X, tran.Y, 0)
+		// },
+		EventType: def.EventSpawnVFX,
+		Entity:    e,
+		SubType:   uint8(def.VFXTornado),
 	})
 }
 
 // ==========================================
 // 5. HỆ ĐẤT (STONE)
 // ==========================================
-func SpawnShockwave(engine *ArchEngine, owner Entity, team uint8, x, y float32, angle uint16) {
+func SpawnShockwave(engine *ArchEngine, owner Entity, team uint16, x, y float32, angle uint16) {
 	e := engine.CreateEntity()
 	// rad := float64(angle) * (math.Pi / 180.0)
 	// spawnX := x + float32(math.Cos(rad))*200.0
@@ -361,13 +401,16 @@ func SpawnShockwave(engine *ArchEngine, owner Entity, team uint8, x, y float32, 
 	// --- LOGIC TẦM NHÌN ---
 	addComponent(engine, e, VisibilityMask{})
 	addComponent(engine, e, NetVisual{
-		createRawEvent: func(tran Transform) RawEvent {
-			return NewSpawnProjectEvent(e, def.SpellShockwave, tran.X, tran.Y, tran.Angle)
-		},
+		// createRawEvent: func(tran Transform) RawEvent {
+		// 	return NewSpawnProjectEvent(e, def.SpellShockwave, tran.X, tran.Y, tran.Angle)
+		// },
+		EventType: def.EventSpawnProjectile,
+		Entity:    e,
+		SubType:   uint8(def.SpellShockwave),
 	})
 }
 
-func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, aimX, aimY float32) {
+func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint16, aimX, aimY float32) {
 	// 1. TẠO BÓNG TÂM ĐIỂM (Cảnh báo 1.2s)
 	e := engine.CreateEntity()
 	addComponent(engine, e, Transform{X: aimX, Y: aimY})
@@ -379,9 +422,13 @@ func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, aimX, aimY f
 	// --- LOGIC TẦM NHÌN CẢNH BÁO ---
 	addComponent(engine, e, VisibilityMask{})
 	addComponent(engine, e, NetVisual{
-		createRawEvent: func(tran Transform) RawEvent {
-			return NewSpawnVFX(def.VFXBoulderWarning, e,tran.X, tran.Y, 180.0)
-		},
+		// createRawEvent: func(tran Transform) RawEvent {
+		// 	return NewSpawnVFX(def.VFXBoulderWarning, e,tran.X, tran.Y, 180.0)
+		// },
+		EventType: def.EventSpawnVFX,
+		Entity:    e,
+		SubType:   uint8(def.VFXBoulderWarning),
+		ExtraValue: 180,
 	})
 
 	// 2. ĐÁ RƠI XUỐNG VÀ NỔ BÙM
@@ -399,9 +446,12 @@ func SpawnBoulderfall(engine *ArchEngine, owner Entity, team uint8, aimX, aimY f
 			// --- LOGIC TẦM NHÌN VỤ NỔ ĐẤT ĐÁ ---
 			addComponent(engine, hitbox, VisibilityMask{})
 			addComponent(engine, hitbox, NetVisual{
-				createRawEvent: func(tran Transform) RawEvent {
-					return NewSpawnVFX(def.VFXBoulderCrash,e, tran.X, tran.Y, 0) // Client vẽ hiệu ứng nổ 0.6s
-				},
+				// createRawEvent: func(tran Transform) RawEvent {
+				// 	return NewSpawnVFX(def.VFXBoulderCrash,e, tran.X, tran.Y, 0) // Client vẽ hiệu ứng nổ 0.6s
+				// },
+				EventType: def.EventSpawnVFX,
+				Entity:    hitbox,
+				SubType:   uint8(def.VFXBoulderCrash),
 			})
 		},
 	})

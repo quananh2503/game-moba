@@ -9,6 +9,7 @@ type RawEvent struct{
 	Type byte 
 	Len uint8
 	Payload [MaxEventPayload]byte 
+	
 }
 func NewEvent(evType byte) RawEvent{
 	return RawEvent{

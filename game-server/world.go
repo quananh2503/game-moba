@@ -101,10 +101,10 @@ func ( w *World)AcceptPendingclients(clients *[]uint16, accpets *[]MapNetEntity)
 		addComponent(w.Engine, e, Vitality{HP: 2000, MaxHP: 2000})		
 		addComponent(w.Engine, e, StatSheet{BaseSpeed: def.StatBaseSpeed, CurrSpeed: def.StatBaseSpeed,Armor: 100000})
 		addComponent(w.Engine, e, SkillCooldowns{})
-		element := rand.Intn(5)+1
+		element := id%5 + 1
 
 		addComponent(w.Engine, e, Equipment{PrimaryElement:uint8(element), ActiveSlot: 1})
-		addComponent(w.Engine, e, Faction{TeamID: uint8(id)}) // Tạm thời TeamID = NetID (Đấu đơn)
+		addComponent(w.Engine, e, Faction{TeamID: id}) // Tạm thời TeamID = NetID (Đấu đơn)
 		addComponent(w.Engine,e,NetSync{NetID: id})
 		addComponent(w.Engine,e,ActiveStatusEffects{})
 		addComponent(w.Engine,e,SolidBody{})
@@ -114,7 +114,7 @@ func ( w *World)AcceptPendingclients(clients *[]uint16, accpets *[]MapNetEntity)
 		(*accpets)=append((*accpets), MapNetEntity{
 			NetID: id,
 			Entity: e,
-			TeamID: uint8(id),
+			TeamID: id,
 		})
 	}	
 	(*clients)=(*clients)[:0]
@@ -125,7 +125,7 @@ func( w *World)RemoveEntities(dels *[]Entity){
 	}
 	(*dels)=(*dels)[:0]
 }
-func( w *World)Tick( dt float32,inputs *[MaxPlayers]atomic.Uint64,outbox *NetworkOutbox){
+func( w *World)Tick( dt float32,inputs *[MaxPlayers]atomic.Uint64,globalEvent *GlobalEvent, frameShapshot *[]SnapShotData){
 		
 		NetworkInputSystem(w.Engine,inputs[:])
 		w.lifeSpanSystem.process(w.Engine,dt)
@@ -141,7 +141,7 @@ func( w *World)Tick( dt float32,inputs *[MaxPlayers]atomic.Uint64,outbox *Networ
 		MovementSystem(w.Engine,dt)
 		// SpatialMappingSystem(w.Engine)
 		VisionCalculationSystem(w.Engine,w.visions)	
-		VisionTriggerSystem(w.Engine,w.visions,outbox)
+		VisionTriggerSystem(w.Engine,w.visions,globalEvent)
 		TrailEmitterSystem(w.Engine,dt)
 		w.TriggerOverlapSystem.process(w.Engine,&w.overlapEvents)
 		
@@ -152,10 +152,10 @@ func( w *World)Tick( dt float32,inputs *[MaxPlayers]atomic.Uint64,outbox *Networ
 		w.statusEffectApplySystem.process(w.Engine,&w.hitEvents)
 		w.statusEffectUpdateSystem.process(w.Engine,dt,&w.hitEvents)
 		PreDeadSystem(w.Engine)
-		VisionTriggerVialitySystem(w.Engine,w.visions,outbox) 
-		w.trajectorySyncSystem.process(w.Engine,outbox)
+		VisionTriggerVialitySystem(w.Engine,w.visions,globalEvent,frameShapshot) 
+		w.trajectorySyncSystem.process(w.Engine,globalEvent)
 		w.cleanWallHitSystem.process(w.Engine)
-		w.cleanSystem.process(w.Engine,outbox)
+		w.cleanSystem.process(w.Engine,globalEvent)
 
 }
 // Thêm struct này ở ngoài để lưu nháp

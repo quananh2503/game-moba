@@ -26,21 +26,24 @@ func (w *PacketWriter) WriteUint8(v uint8) {
 	w.Buf[w.Pos] = v
 	w.Pos++
 }
-
 func (w *PacketWriter) WriteUint16(v uint16) {
-	// Ghi trực tiếp 2 bytes, không thông qua trung gian
-	w.Buf[w.Pos] = byte(v >> 8)
-	w.Buf[w.Pos+1] = byte(v)
-	w.Pos += 2
+    // Ép check ranh giới 1 lần duy nhất cho cả cụm 2 bytes
+    b := w.Buf[w.Pos : w.Pos+2] 
+    
+    b[0] = byte(v >> 8) // 0 Bounds Check!
+    b[1] = byte(v)      // 0 Bounds Check!
+    w.Pos += 2
 }
 
 func (w *PacketWriter) WriteUint32(v uint32) {
-	b := w.Buf[w.Pos : w.Pos+4]
-	b[0] = byte(v >> 24)
-	b[1] = byte(v >> 16)
-	b[2] = byte(v >> 8)
-	b[3] = byte(v)
-	w.Pos += 4
+    // Ép check ranh giới 1 lần duy nhất cho cả cụm 4 bytes
+    b := w.Buf[w.Pos : w.Pos+4]
+    
+    b[0] = byte(v >> 24)
+    b[1] = byte(v >> 16)
+    b[2] = byte(v >> 8)
+    b[3] = byte(v)
+    w.Pos += 4
 }
 
 func (w *PacketWriter) WriteFloat32(v float32) {

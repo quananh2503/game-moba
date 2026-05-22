@@ -25,7 +25,7 @@ type Server struct{
 type MapNetEntity struct{
 	NetID uint16 
 	Entity Entity
-	TeamID uint8
+	TeamID uint16
 }
 func NewServer(udpEngine *UdpEngine) *Server {
 	// Tạo các thùng Data và Engine
@@ -44,12 +44,18 @@ func NewServer(udpEngine *UdpEngine) *Server {
 		},
 	}
 }
+var sumEvent int
 func( s *Server)StartLoop(){
 	InitVisionTemplates()
 	InitMathTables()
 	ticker := time.NewTicker(time.Second / TickRate)
 	dt := float32(0.016)
-	outbox := NewNetworkOutbox() // Tái sử dụng mỗi tick
+	GlobalEvent := &GlobalEvent{
+		
+	}
+	frameShapshot := make([]SnapShotData, 0, MaxPlayers)
+	finalSnapshot := FinalSnapshot{}
+
 
 	// SpawnMapObjects(s.world.Engine)
 	// s.CacheMapData()
@@ -59,6 +65,7 @@ func( s *Server)StartLoop(){
 	var totalWorkTime time.Duration
 	var maxTickTime time.Duration
 	var tickCount int
+	
 	lastReport := time.Now()
 	targetTickTime := time.Second / TickRate //
 	for {
@@ -70,19 +77,23 @@ func( s *Server)StartLoop(){
 		// fmt.Println("vao day roi ",s.state.TickCount)
 		// start := time.Now()
 
-		s.sessions.ProcessRawPackets(s.packetBuffer,s.inputs,&s.pendingId,s.state)
+		s.sessions.ProcessRawPackets(s.packetBuffer,s.inputs,&s.pendingId,s.state,s.state.TickCount, GlobalEvent.Head)
+		s.sessions.ProcessBatchAck(s.sessions.acks)
 		// fmt.Println("toi day roi")
 		s.world.AcceptPendingclients(&s.pendingId,&acceptEntities)
 		s.sessions.CheckTimeouts(s.state.TickCount,&delsEntities)
 		s.world.RemoveEntities(&delsEntities)
 		// fmt.Println("toi day roi")
-		s.sessions.SyncNetEntity(&acceptEntities,s.mapDataCache)
+		s.sessions.SyncNetEntity(&acceptEntities, GlobalEvent)
 	
-		s.world.Tick(dt, s.inputs, outbox)
-		s.sessions.FlushNetworkOutbox(s.sessions.clientSOA,outbox)
+		s.world.Tick(dt, s.inputs, GlobalEvent, &frameShapshot)
+		
+		s.sessions.FlushToQueue(GlobalEvent)
 		// a := s.sessions.clients
-		s.netIO.BroadcastState( s.state,s.sessions.clientSOA,outbox)
-		outbox.Reset()
+		s.netIO.GatherVisibleSnapshots(s.sessions.nextClientID, frameShapshot, frameShapshot, s.sessions.clientSOA, &finalSnapshot)
+		s.netIO.WriteBatch(GlobalEvent, frameShapshot, s.sessions.clientSOA, s.state.TickCount, &finalSnapshot) 
+		frameShapshot = frameShapshot[:0] // Reset slice mà không tạo lại bộ nhớ
+		
 
 		elapsed := time.Since(start)
 		totalWorkTime += elapsed
@@ -105,12 +116,16 @@ func( s *Server)StartLoop(){
 			if avgTick > targetTickTime {
 				fmt.Printf("⚠️  [WARNING] Server đang bị LAG! Logic chậm hơn 16.6ms| ")
 			}
+			fmt.Printf("event global head: %d ", GlobalEvent.Head)
+			fmt.Printf("event added: %d ", sumEvent/(TickRate* 1000))
+			fmt.Printf("event head : %d ", s.sessions.clientSOA.Events_Header[53].Head)
 			fmt.Printf("---------------------------\n")
 
 			// Reset bộ đếm cho giây tiếp theo
 			totalWorkTime = 0
 			maxTickTime = 0
 			tickCount = 0
+			sumEvent = 0
 			lastReport = time.Now()
 		}
 		// fmt.Println("toi day roi")

@@ -6,7 +6,7 @@ const (
 	SafeMTU         = 1200
 	MaxInFlight     = 256
 	MaxEventsPerPkt = 32
-	MaxPlayers =500
+	MaxPlayers =1000
 	EventQueueSize=1024
 	EventQueueMask = EventQueueSize - 1 
 )
@@ -22,11 +22,10 @@ const (
 	VisionGridRows = int(MapSize / VisionCellSize)
 
 	Element_Fire    uint8 = 1
-	Element_Lightning   uint8 = 2
-	Element_Ice     uint8 = 3
-	Element_Wind    uint8 = 4
-	Element_Stone   uint8 = 5
-	Element_Poison uint8 = 6
+	Element_Ice     uint8 = 2
+	Element_Wind    uint8 = 3
+	Element_Stone   uint8 = 4
+	Element_Poison uint8 = 5
 )
 
 

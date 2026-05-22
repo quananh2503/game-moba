@@ -110,7 +110,7 @@ func(e *Equipment)GetActiveElement() uint8{
     return e.SecondaryElement
 }
 type Faction struct{
-    TeamID uint8
+    TeamID uint16
 }
 type TrailEmitter struct {
     Interval float32
@@ -161,12 +161,12 @@ type OverlapEvent struct {
 }
 type CellsVisibilityMask [VisionGridCols*VisionGridRows] VisibilityMask
 type VisibilityMask struct{
-    KnownByTeams [4]uint64
+    KnownByTeams [16]uint64
 }
-func ( m *VisibilityMask)Has(teamID uint8) bool{
+func ( m *VisibilityMask)Has(teamID uint16) bool{
     return (m.KnownByTeams[teamID>>6] & (uint64(1) << (teamID & 63))) != 0
 }
-func ( m *VisibilityMask)Set(teamID uint8){
+func ( m *VisibilityMask)Set(teamID uint16){
     m.KnownByTeams[teamID>>6] |= (uint64(1) << (teamID & 63))
 }
 func( m *VisibilityMask)Clear(){
@@ -175,17 +175,25 @@ func( m *VisibilityMask)Clear(){
     }
 }
 
-func ( m *VisibilityMask)Or(other VisibilityMask){
+func ( m *VisibilityMask)Or(other *VisibilityMask){
     for i:=range m.KnownByTeams{
         m.KnownByTeams[i]|=other.KnownByTeams[i]
     }    
 }
-func (m *VisibilityMask) AndNot(other VisibilityMask) VisibilityMask {
+func (m *VisibilityMask) AndNot(other *VisibilityMask) VisibilityMask {
     res := VisibilityMask{}
     for i := range m.KnownByTeams {
        res.KnownByTeams[i] = m.KnownByTeams[i] &^ other.KnownByTeams[i]
     }   
     return res 
+}
+func(m *VisibilityMask)IsEmpty() bool{
+    for _,v:=range m.KnownByTeams{
+        if v!=0{
+            return false
+        } 
+    }
+    return true
 }
 
 func (m *VisibilityMask) ForAll(logic func(teamID uint8)) {
@@ -203,7 +211,11 @@ func (m *VisibilityMask) ForAll(logic func(teamID uint8)) {
 type TrajectoryChanged struct { }
 
 type NetVisual struct{
-    createRawEvent func( tran Transform)RawEvent
+    //  createRawEvent func( tran Transform)RawEvent
+    EventType byte
+    Entity  Entity
+    SubType uint8
+    ExtraValue uint16
 }
 type TagPlayer struct{}
 type SightRange  struct{

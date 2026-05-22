@@ -14,7 +14,7 @@ import (
 
 const (
 	ServerAddr = "127.0.0.1:9000"
-	NumBots    = 497
+	NumBots    = 997
 	MapCenter  = 2000.0
 	Boundary   = 1800.0
 )

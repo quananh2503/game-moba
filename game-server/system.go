@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	def "game/pkg"
 	"math"
 	"math/bits"
@@ -338,7 +337,7 @@ func MovementSystem(engine *ArchEngine , dt float32){
 }
 type TargetCache struct {
 	ID     Entity
-	TeamID uint8
+	TeamID uint16
 	X, Y   float32
 	C      Collider
 }
@@ -960,7 +959,7 @@ func VisionCalculationSystem(engine *ArchEngine, visions *CellsVisibilityMask) {
 	})
 }
 
-func VisionTriggerSystem(engine *ArchEngine, visions *CellsVisibilityMask, outbox *NetworkOutbox){
+func VisionTriggerSystem(engine *ArchEngine, visions *CellsVisibilityMask, globalEvents *GlobalEvent){
 	RunSystem4Ex(engine,GetMask[TagDead]()|GetMask[NetSync](), func(count int, entities []Entity, masks []VisibilityMask, visuals []NetVisual,trans []Transform, bounds []BoundingBox) {
 		for i:=0; i < count;i++{
 			mask := &masks[i]
@@ -981,30 +980,35 @@ func VisionTriggerSystem(engine *ArchEngine, visions *CellsVisibilityMask, outbo
 			resMask := &VisibilityMask{}
 			for row := minRow; row <= maxRow;row++{
 				for col := minCol;col<=maxCol;col++{
-					mask := visions[row * VisionGridCols+col]
+					mask := &visions[row * VisionGridCols+col]
 					resMask.Or(mask)					 
 				}
 			}
-			rawEv := visual.createRawEvent(t)
-			gainedVisionMask := resMask.AndNot(*mask)
-			gainedVisionMask.ForAll(func(teamID uint8) {
-				outbox.Teams[teamID]=append(outbox.Teams[teamID], 
-				rawEv)
-			})
-			lostVisionMask := mask.AndNot(*resMask)
-			lostVisionMask.ForAll(func(teamID uint8) {
-				// TẠO EVENT ẨN/XÓA ENTITY GỬI CHO CLIENT (Bạn cần hàm tạo event này)
-				hideEv := NewRemoveEntityEvent(entities[i]) 
-				// fmt.Println("vien dan ra khoi tam nhin E: ",entities[i] )
-				outbox.Teams[teamID]=append(outbox.Teams[teamID], hideEv)
-			})
+			// rawEv := visual.createRawEvent(t)
+			rawEv := NewEvent(visual.EventType)
+			rawEv.WriteUint32(uint32(visual.Entity))
+			rawEv.WriteUint8((visual.SubType))
+			rawEv.WriteFloat32(t.X)
+			rawEv.WriteFloat32(t.Y)
+			rawEv.WriteUint16(t.Angle)
+			
+			//  rawEv.WriteUint16(visual.NetID)
+			gainedVisionMask := resMask.AndNot(mask)
+			
+			globalEvents.Push(rawEv, gainedVisionMask)
+
+
+			lostVisionMask := mask.AndNot(resMask)
+			hideEv := NewRemoveEntityEvent(entities[i]) 
+			globalEvents.Push(hideEv, lostVisionMask)
+
 			*mask=*resMask
 		}
 	})
 }
 
-func VisionTriggerVialitySystem(engine *ArchEngine, visions *CellsVisibilityMask, outbox *NetworkOutbox){
-	RunSystem4Ex(engine,GetMask[TagDead](), func(count int, entities []Entity,trans []Transform, cols[]Collider, vialities []Vitality, nets[]NetSync) {
+func VisionTriggerVialitySystem(engine *ArchEngine, visions *CellsVisibilityMask, globalEvents *GlobalEvent, frameShapshot *[]SnapShotData){
+	RunSystem4Ex(engine,GetMask[TagDead](), func(count int, entities []Entity,trans []Transform, cols[]Collider, vialities []Vitality, nets []NetSync) {
 		for i:=0; i < count;i++{
 		
 			t := trans[i]
@@ -1023,44 +1027,49 @@ func VisionTriggerVialitySystem(engine *ArchEngine, visions *CellsVisibilityMask
 			resMask := &VisibilityMask{}
 			for row := minRow; row <= maxRow;row++{
 				for col := minCol;col<=maxCol;col++{
-					mask := visions[row * VisionGridCols+col]
+					mask := &visions[row * VisionGridCols+col]
 					resMask.Or(mask)					 
 				}
 			}
-			
-			resMask.ForAll(func(teamID uint8) {
-				position := PlayerSnapshot{
+			if !resMask.IsEmpty(){
+				*frameShapshot = append( *frameShapshot, SnapShotData{
 					NetID: nets[i].NetID,
-					X: t.X,
-					Y: t.Y,
-					HP: uint16(v.HP),	
-				}
+					X:t.X,
+					Y:t.Y,
+					HP: uint16(v.HP),
+					Mask: *resMask,
+				})
 
-				outbox.Positions[teamID]=append(outbox.Positions[teamID], position)
-			})
+
+				// fmt.Println("frame ", *frameShapshot)
+			}
+			
 		}
 	})
 }
 type CleanSystem struct{
 	deads []Entity
 }
-func ( s *CleanSystem)process(engine *ArchEngine, outbox *NetworkOutbox){
+func ( s *CleanSystem)process(engine *ArchEngine, globalEvents *GlobalEvent){
 	s.deads=s.deads[:0]
 	RunSystem2Ex(engine,0, func(count int, entities []Entity, deads []TagDead, masks []VisibilityMask) {
 		for i := 0; i < count; i++ {
 			s.deads = append(s.deads, entities[i])
 			
 			ev := NewRemoveEntityEvent(entities[i]) 
+			// ev.Mask=masks[i]
+			globalEvents.Push(ev,masks[i])
 			
-			masks[i].ForAll(func(teamID uint8) {
-					outbox.Teams[teamID]=append(outbox.Teams[teamID], ev)
-			})
+			// masks[i].ForAll(func(teamID uint8) {
+			// 		outbox.Teams[teamID]=append(outbox.Teams[teamID], ev)
+			// })
 		}
 	})
 	RunSystem2(engine, func(count int, entities []Entity, deads []TagDead, players []TagPlayer) {
 		for i := 0; i < count; i++ {
 			ev := NewKillEvent(entities[i])
-			outbox.Globals = append(outbox.Globals, ev)
+			// ev.Mask=GlobalMask
+			globalEvents.Push(ev,GlobalMask)
 		}
 	})
 	if len(s.deads)==0{
@@ -1076,17 +1085,18 @@ func ( s *CleanSystem)process(engine *ArchEngine, outbox *NetworkOutbox){
 type TrajectorySyncSystem struct{
 	removes []Entity
 }
-func (s *TrajectorySyncSystem)process(engine *ArchEngine, outbox *NetworkOutbox) {
+func (s *TrajectorySyncSystem)process(engine *ArchEngine, globalEvents *GlobalEvent) {
 	s.removes=s.removes[:0]
 	// Lặp qua tất cả những Entity vừa bị thay đổi quỹ đạo trong frame này
 	RunSystem3(engine, func(count int, entities []Entity, changes []TrajectoryChanged, trans []Transform, masks []VisibilityMask) {
 		for i := 0; i < count; i++ {
 			updateEv := NewUpdateProjectileEvent(entities[i], trans[i].X, trans[i].Y, trans[i].Angle)
-			
+			globalEvents.Push(updateEv, masks[i])
+			// updateEv.Mask=masks[i]
 			// Phát gói tin Update cho các Team đang nhìn thấy
-			masks[i].ForAll(func(teamID uint8) {
-				outbox.Teams[teamID]=append(outbox.Teams[teamID], updateEv)
-			})
+			// masks[i].ForAll(func(teamID uint8) {
+			// 	outbox.Teams[teamID]=append(outbox.Teams[teamID], updateEv)
+			// })
 			s.removes=append(s.removes, entities[i])
 		}
 	})
@@ -1134,5 +1144,5 @@ func InitVisionTemplates() {
         }
         visionTemplates[i] = template
     }
-    fmt.Printf("Đã build xong Vision Template. Bán kính 500 chiếm %d ô lưới.\n")
+    // fmt.Printf("Đã build xong Vision Template. Bán kính 500 chiếm %d ô lưới.\n")
 }
